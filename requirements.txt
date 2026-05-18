@@ -1,0 +1,7 @@
+Flask
+Flask-CORS
+Flask-Sock
+pandas
+pyserial
+websocket-client
+opencv-python

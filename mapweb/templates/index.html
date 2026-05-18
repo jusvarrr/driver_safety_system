@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Leaflet Vector Tiles</title>
+
+    <!-- CSS for Leaflet map  -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.5.1/dist/leaflet.css"
+        integrity="sha512-xwE/Az9zrjBIphAcBb3F6JVqxf46+CDLwfLMHloNu6KEQCAWi6HcDUbeOfBIptF7tcCzusKFjFw2yuvEpDL9wQ=="
+        crossorigin="" />
+
+    <!-- JS for Leaflet map  -->
+    <!-- Make sure you put this AFTER Leaflet's CSS -->
+    <script src="https://unpkg.com/leaflet@1.5.1/dist/leaflet.js"
+        integrity="sha512-GffPMF3RvMeYyc1LWMHtK8EbPv0iNZ8/oTtHPx9/cc2ILxQ+u905qIwdpULaqDkyBKgOaB57QTMg7ztg8Jm2Og=="
+        crossorigin=""></script>
+
+    <!-- Leaflet plugin for vector tiles support -->
+    <script type="text/javascript" src="https://unpkg.com/leaflet.vectorgrid@1.2.0"></script>
+
+    <style>
+        html,
+        body,
+        #map {
+            font-family: sans-serif;
+            height: 100%;
+            width: 100%;
+        }
+
+        body {
+            padding: 0;
+            margin: 0;
+        }
+
+        #map {
+            z-index: 1;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="map"></div>
+
+    <script>
+        import 'maplibre-gl/dist/maplibre-gl.css';
+        import {Map} from 'maplibre-gl';
+
+        const map = new Map({
+            container: 'map',
+            style: 'http://10.3.141.1:5000/style.json',
+            center: [0, 0],
+            zoom: 14
+        });
+
+        
+
+    </script>
+
+</body>
+
+</html>
