@@ -14,7 +14,7 @@ FIX_NET_SCRIPT="$PROJ_DIR/fix_network.sh"
 
 echo "1/6 Installing required packages"
 apt-get update
-apt-get install -y python3-flask python3-picamera2 python3-opencv libgpiod-dev git build-essential hostapd dnsmasq rng-tools iptables-persistent python3-venv git-lfs libcamera-apps
+apt-get install -y python3-flask python3-picamera2 python3-opencv libgpiod-dev git build-essential hostapd dnsmasq rng-tools iptables-persistent python3-venv git-lfs
 
 echo "2/6 Pulling tiles from lfs"
 cd "$PROJ_DIR" || exit
