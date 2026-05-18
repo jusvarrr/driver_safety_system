@@ -102,7 +102,7 @@ sed -i '/power_save off/d' "$TMP_CRON"
 cat << EOF >> "$TMP_CRON"
 @reboot /usr/sbin/iw dev wlan0 set power_save off
 @reboot sleep 30 && $FIX_NET_SCRIPT > $PROJ_DIR/ap_log.txt 2>&1
-@reboot sleep 45 && cd $PROJ_DIR && taskset -c 0,1 $VENV_PATH/bin/python3 uds-broker.py >> $PROJ_DIR/driver_safety_system.log 2>&1
+@reboot sleep 40 && cd $PROJ_DIR && taskset -c 0,1 $VENV_PATH/bin/python3 uds-broker.py >> $PROJ_DIR/driver_safety_system.log 2>&1
 @reboot sleep 45 && cd $PROJ_DIR && taskset -c 0,1 ./sensor_ctrl >> $PROJ_DIR/driver_safety_system.log 2>&1
 @reboot sleep 48 && cd $PROJ_DIR/mapweb && taskset -c 0,1 $VENV_PATH/bin/python3 -m flask --app map_serv.py run --host=10.3.141.1 --port=5000 >> $PROJ_DIR/driver_safety_system.log 2>&1
 @reboot sleep 50 && cd $PROJ_DIR && taskset -c 0,1 $VENV_PATH/bin/python3 telemetry_control.py >> $PROJ_DIR/driver_safety_system.log 2>&1

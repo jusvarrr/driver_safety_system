@@ -5,6 +5,14 @@ const map = new maplibregl.Map({
   zoom: 6,
 });
 
+const arrowEl = document.createElement('div');
+arrowEl.className = 'vehicle-arrow-marker';
+arrowEl.innerHTML = `
+  <svg width="40" height="40" viewBox="0 0 100 100" style="display: block;">
+    <polygon points="50,15 20,85 50,65 80,85" fill="#E74C3C" stroke="#FFFFFF" stroke-width="6" stroke-linejoin="round"/>
+  </svg>
+`;
+
 let vehicleMarker = null;
 
 let correctionStep = 0; // 0 = not enabled, 1 = coordinates, 2 = rotation
@@ -17,6 +25,23 @@ const allMarkers = [];
 let marksVisible = true;
 
 const socket = new WebSocket('ws://' + window.location.hostname + ':5000/ws');
+
+const statusPanel = document.createElement('div');
+statusPanel.id = 'system-status-panel';
+statusPanel.style.padding = '10px';
+statusPanel.style.backgroundColor = 'rgba(44, 62, 80, 0.9)';
+statusPanel.style.color = '#ffffff';
+statusPanel.style.borderRadius = '4px';
+statusPanel.style.fontSize = '12px';
+statusPanel.style.fontFamily = 'sans-serif';
+statusPanel.style.display = 'flex';
+statusPanel.style.flexDirection = 'column';
+statusPanel.style.gap = '5px';
+statusPanel.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+statusPanel.innerHTML = `
+  <div style="font-weight: bold; border-bottom: 1px solid #7f8c8d; padding-bottom: 3px; margin-bottom: 3px;">System info</div>
+  <div>Navigation mode: <span id="status-nav" style="color: #2ecc71; font-weight: bold;">GNSS (Stabilus)</span></div>
+`;
 
 socket.onopen = () => {
   console.log("WebSocket connected.");
@@ -35,6 +60,15 @@ map.on('load', () => {
         addMarkToMap(payload);
       }
       else if (topic === 'location/gnss' || topic === 'location/dr') {
+        const navStatusEl = document.getElementById('status-nav');
+        if (topic === 'location/dr') {
+          navStatusEl.innerText = "Dead Reckoning on";
+          navStatusEl.style.color = '#e67e22';
+        } else {
+          navStatusEl.innerText = "GNSS Stable";
+          navStatusEl.style.color = '#2ecc71';
+        }
+
         if (correctionStep > 0) return;
 
         console.log("GPS PAYLOAD:", payload);
@@ -49,7 +83,8 @@ map.on('load', () => {
 
         if (!vehicleMarker) {
           vehicleMarker = new maplibregl.Marker({
-            color: "#FF0000"
+            element: arrowEl,
+            rotationAlignment: 'map'
           })
             .setLngLat([lon, lat])
             .addTo(map);
@@ -76,6 +111,7 @@ map.on('load', () => {
 
 socket.onclose = () => {
     console.log("Disconnected and reconnecting...");
+    setTimeout(connectWS, 2000);
 };
 
 map.addControl(new maplibregl.NavigationControl());
@@ -111,13 +147,15 @@ map.on('click', (e) => {
   if (!name) return;
   const info = prompt("Info:");
   const type = prompt("Type (markedImportant, markedDangerous, unclassified):", "unclassified");
+  const sendToCloud = confirm("Send to cloud via mobile network?");
 
   const markData = {
     name: name,
     lon: e.lngLat.lng,
     lat: e.lngLat.lat,
     info: info,
-    type: type
+    type: type,
+    sync_cloud: sendToCloud
   };
 
   console.log("Post data (mark):", markData);
@@ -168,6 +206,8 @@ toggleMarksBtn.onclick = () => {
   
   console.log(`Marks visibility changed. Visible: ${marksVisible}`);
 };
+
+controlContainer.appendChild(statusPanel);
 controlContainer.appendChild(toggleMarksBtn);
 
 const manualCorrectionBtn = document.createElement('button');
@@ -182,7 +222,7 @@ manualCorrectionBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
 manualCorrectionBtn.onclick = () => {
   if (!vehicleMarker) {
     const center = map.getCenter();
-    vehicleMarker = new maplibregl.Marker({ color: "#FF0000" })
+    vehicleMarker = new maplibregl.Marker({ element: arrowEl, rotationAlignment: 'map' })
       .setLngLat([center.lng, center.lat])
       .addTo(map);
   }

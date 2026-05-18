@@ -93,9 +93,11 @@ while True:
             if sleep_counter > 10:
                 state = 1
                 #cv2.putText(frame, "MIEGUISTUMAS", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+                print("drowsy")
         else:
             state = 0
             sleep_counter = 0
+            print("awake")
             #cv2.putText(frame, "Budrus", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     else:
         state = 0

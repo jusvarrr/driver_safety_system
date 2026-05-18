@@ -313,8 +313,7 @@ int main() {
     }
 
     if (connect_to_hub() < 0) {
-        cleanup_all();
-        return 1;
+        printf("Will try reconnecting to UDS..");
     }
 
     if (buzzer_setup() < 0) {

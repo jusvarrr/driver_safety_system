@@ -127,7 +127,8 @@ class TelemetryControl:
                                 "info": data.get('info', 'Quick action mark'),
                                 "type": data.get('type', 'markedEmergency')
                             })
-                            self.mark_queue.append(mark_to_send)
+                            if data.get('sync_cloud', False):
+                                self.mark_queue.append(mark_to_send)
 
         except BlockingIOError:
             pass
@@ -321,7 +322,7 @@ class TelemetryControl:
                 self.sim7600.set_action_state(self.sim7600.ActionState.MARK_SEND)
                 action_state = self.sim7600.get_action_state()
             
-            elif (now - self.last_updated_to_cloud > to_cloud_rate or self.force_gps_send) and action_state == self.sim7600.ActionState.NONE:
+            elif (now - self.last_updated_to_cloud > to_cloud_rate) and action_state == self.sim7600.ActionState.NONE:
                 self.sim7600.set_action_state(self.sim7600.ActionState.GPS_SEND)
                 action_state = self.sim7600.get_action_state()
                 self.last_updated_to_cloud = now
