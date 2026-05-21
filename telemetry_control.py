@@ -34,6 +34,7 @@ class TelemetryControl:
         self.map_server_port = 5000
         self.monitor_system_api = '172.161.129.0'
         self.mark_queue = deque()
+        self.location_queue = deque()
 
         self.current_location_json = {}
         self.current_long = 0
@@ -48,6 +49,11 @@ class TelemetryControl:
 
         self.gnss_signal = 0
         self.notified_no_gnss = False
+
+        self.last_creg_check = 0
+        self.last_reconnect_try = 0
+        self.mqtt_needs_reconnect = False
+        self.data_mode = 'GPS'
 
         self.connect_to_hub()
 
@@ -81,7 +87,7 @@ class TelemetryControl:
                         msg = {"topic": "conn_stat/gnss", "data": {"state": 0, "lon": self.current_long, "lat": self.current_lat}}
                         self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
                         self.notified_no_gnss = True
-                        print("[Telemetry] GNSS Lost. Passing tracking baton to IMU Dead Reckoning.")
+                        print("GNSS Lost. Passing tracking baton to IMU Dead Reckoning.")
                 
             elif data_type == self.ToFlaskType.MARK:
                 if payload and isinstance(payload, dict):
@@ -100,7 +106,6 @@ class TelemetryControl:
     def read_uds(self):
         if self.hub_sock is None:
             return
-
         try:
             r_socks, _, _ = select.select([self.hub_sock], [], [], 0.01)
             if r_socks:
@@ -129,6 +134,22 @@ class TelemetryControl:
                             })
                             if data.get('sync_cloud', False):
                                 self.mark_queue.append(mark_to_send)
+
+                        if topic == "system/gps_mode":
+                            self.data_mode = 'GPS'
+                            print("Data source mode switched to: GPS. Resuming sensor reads.")
+
+                        if topic == "location/dr_update":
+                            print(f"Applying manual correction: {data}")
+                            self.data_mode = 'MANUAL'
+                            
+                            self.current_lat = data['lat']
+                            self.current_long = data['lon']
+                            self.location_valid = True
+                        
+                        elif topic == "button/cell":
+                            print("Button pressed - disconnect from cellular")
+                            self.sim7600.send_command("AT+CGACT=0,1")
 
         except BlockingIOError:
             pass
@@ -180,13 +201,20 @@ class TelemetryControl:
                 'altitude': float(alt_val),
                 'speed': float(speed_val), 
                 'course': float(course_val), 
-                'time': f"{date_str}T{time_str}.000Z"
+                'time': f"{date_str}T{time_str}.000Z",
+                'source' : "GPS"
             }
             self.location_valid = True
             self.current_lat = lat_val
             self.current_long = long_val
             self.current_location_json = gps
             return gps
+        
+    def get_tracker_id(self):
+        file_path = "tracker_id.txt"
+        if os.path.exists(file_path):
+            with open(file_path, "r") as f:
+                return f.read().strip()
         
     def get_send_to_cloud_rate(self, speed):
         #speed = kph
@@ -209,6 +237,7 @@ class TelemetryControl:
         topic = "monitorer/1/marked"
         self.sim7600.send_command_sleep(f'AT+CMQTTSUB=0,{len(topic)},1', 2)
         self.sim7600.send_command_sleep(topic, 1)
+        self.error_cnt = 0
         print(f"Subscribed to {topic}")
 
     def sim7600_setup(self):
@@ -223,13 +252,61 @@ class TelemetryControl:
         self.sim7600.send_command_sleep("AT+CGACT=1,1")
         print("SIM7600 ready for sending to cloud")
 
+    def sim7600_restore_services(self):
+        now = time.time()
+        if now - self.last_creg_check > 15 and self.sim7600.get_action_state() == self.sim7600.ActionState.NONE:
+                self.sim7600.send_command("AT+CREG?")
+                self.last_creg_check = now
+
+        if not self.sim7600.cell_connected:
+            if now - self.last_reconnect_try > 20:
+                print("Network not connected. Reseting cell...")
+                self.sim7600.send_command_sleep("AT+CGATT=1", 1)
+                self.sim7600.send_command_sleep("AT+CGACT=1,1", 1)
+                self.last_reconnect_try = now
+                self.mqtt_needs_reconnect = True
+        else:
+            if not self.mqtt_needs_reconnect:
+                print("Network reconnected, starting MQTT...")
+                self.setup_mqtt()
+                self.mqtt_needs_reconnect = False
+
+
     def sim7600_read_gps(self):
         self.sim7600.send_command("AT+CGPSINFO")
 
-    def send_mqtt_to_cloud_api_sim7600(self, topic, pl):
-        #if not (self.current_location_json and self.location_valid is True):
-        #    return
+    def handle_timeout(self):
+        action_state = self.sim7600.get_action_state()
+        print("Timeout, resetting state")
+        print("action_state", action_state)
+        print("transmit_state",self.sim7600.get_transmit_state())
+        print("mqtt_state",self.sim7600.get_mqtt_send_state())
+        print("receive_state",self.sim7600.get_receive_state())
+        self.sim7600.clean_transmit()
+        if action_state == self.sim7600.ActionState.MARK_SEND or action_state == self.sim7600.ActionState.GPS_SEND:
+            print("Set to retry sending mark")
+        else:
+            self.sim7600.set_action_state(self.sim7600.ActionState.NONE)
 
+    def handle_modem_response(self, res, action_state):
+        if "ERROR" in res and action_state in [self.sim7600.ActionState.GPS_SEND, self.sim7600.ActionState.MARK_SEND]:
+            self.error_cnt += 1
+            return -1
+        elif action_state == self.sim7600.ActionState.GPS_RECV:
+            if "+CGPSINFO" in res:
+                self.parse_gps(res)
+                self.update_server(self.ToFlaskType.COORDS, self.current_location_json)
+                self.sim7600.set_action_state(self.sim7600.ActionState.NONE)
+        elif action_state in [self.sim7600.ActionState.GPS_SEND, self.sim7600.ActionState.MARK_SEND] and self.sim7600.mqtt_send_state == self.sim7600.MQTTSendState.PUB_DONE:
+            if "OK" in res and self.sim7600.get_mqtt_send_state() == self.sim7600.MQTTSendState.PUB_DONE:
+                self.error_cnt = 0
+                self.timeout_cnt = 0
+                self.sim7600.set_action_state(self.sim7600.ActionState.NONE)
+                self.sim7600.set_mqtt_send_state(self.sim7600.MQTTSendState.IDLE)
+                print("Response in pub done got OK")
+        return 0
+
+    def send_mqtt_to_cloud_api_sim7600(self, topic, pl):
         transmit_state = self.sim7600.get_transmit_state()
 
         if transmit_state == self.sim7600.TransmitState.RESP_WAIT:
@@ -256,15 +333,24 @@ class TelemetryControl:
         elif mqtt_state == self.sim7600.MQTTSendState.PUB:
             self.sim7600.send_command("AT+CMQTTPUB=0,1,60")
             self.sim7600.set_mqtt_send_state(self.sim7600.MQTTSendState.PUB_DONE)
-            if self.mark_queue:
+            action_state = self.sim7600.get_action_state()
+            if action_state == self.sim7600.ActionState.MARK_SEND:
                 self.mark_queue.popleft()
+            elif action_state == self.sim7600.ActionState.GPS_SEND:
+                self.location_queue.popleft()
 
         elif mqtt_state == self.sim7600.MQTTSendState.PUB_DONE:
-            if self.sim7600.action_state == self.sim7600.ActionState.MARK_SEND: 
+            if self.sim7600.action_state in [self.sim7600.ActionState.MARK_SEND, self.sim7600.ActionState.MARK_SEND]: 
                 self.error_cnt = 0
 
 
     def run(self):
+        self.dev_id = self.get_tracker_id()
+        if (self.dev_id is None):
+            if app.ws:
+                app.ws.close()
+            print("Configuration is needed to create identification text file!")
+
         self.sim7600_setup()
         self.setup_mqtt()
 
@@ -281,21 +367,8 @@ class TelemetryControl:
             action_state = self.sim7600.get_action_state()
 
             if res is not None:
-                if "ERROR" in res and action_state in [self.sim7600.ActionState.GPS_SEND, self.sim7600.ActionState.MARK_SEND]:
-                    self.error_cnt += 1
+                if (self.handle_modem_response(res, action_state) < 0):
                     continue
-                elif action_state == self.sim7600.ActionState.GPS_RECV:
-                    if "+CGPSINFO" in res:
-                        self.parse_gps(res)
-                        self.update_server(self.ToFlaskType.COORDS, self.current_location_json)
-                        self.sim7600.set_action_state(self.sim7600.ActionState.NONE)
-                elif action_state in [self.sim7600.ActionState.GPS_SEND, self.sim7600.ActionState.MARK_SEND] and self.sim7600.mqtt_send_state == self.sim7600.MQTTSendState.PUB_DONE:
-                    if "OK" in res and self.sim7600.get_mqtt_send_state() == self.sim7600.MQTTSendState.PUB_DONE:
-                        self.error_cnt = 0
-                        self.timeout_cnt = 0
-                        self.sim7600.set_action_state(self.sim7600.ActionState.NONE)
-                        self.sim7600.set_mqtt_send_state(self.sim7600.MQTTSendState.IDLE)
-                        print("Response in pub done got OK")
                 action_state = self.sim7600.get_action_state()
 
             if self.sim7600.mqtt_receive_state == self.sim7600.MQTTReceiveState.RECEIVED_PAYLOAD_MARK:
@@ -304,54 +377,38 @@ class TelemetryControl:
 
             if self.error_cnt > 10:
                 self.sim7600.clean_transmit()
-                print("Executing MQTT reconnection...")
-                self.setup_mqtt()
+                self.mqtt_needs_reconnect = True
                 continue
 
             send_rate_no_manual = self.get_send_to_cloud_rate(self.moving_speed)
             to_cloud_rate = self.send_rate_manual if self.is_send_rate_manual else send_rate_no_manual
+
+            if now - self.last_updated_to_cloud > to_cloud_rate:
+                self.location_queue.append(json.dumps({"id": self.dev_id, "lat": self.current_lat, "long": self.current_long}))
                 
-            if now - self.last_updated_to_maps > 1 and action_state == self.sim7600.ActionState.NONE:
+            if self.data_mode == 'GPS' and now - self.last_updated_to_maps > 1 and action_state == self.sim7600.ActionState.NONE:
                 self.sim7600.set_action_state(self.sim7600.ActionState.GPS_RECV)
-                action_state = self.sim7600.get_action_state()
                 self.sim7600_read_gps()
                 self.last_updated_to_maps = now
                 action_state = self.sim7600.get_action_state()
 
-            elif self.mark_queue and action_state == self.sim7600.ActionState.NONE:
+            elif self.sim7600.cell_connected and self.mark_queue and action_state == self.sim7600.ActionState.NONE:
                 self.sim7600.set_action_state(self.sim7600.ActionState.MARK_SEND)
                 action_state = self.sim7600.get_action_state()
             
-            elif (now - self.last_updated_to_cloud > to_cloud_rate) and action_state == self.sim7600.ActionState.NONE:
+            elif self.sim7600.cell_connected and self.location_queue and action_state == self.sim7600.ActionState.NONE:
                 self.sim7600.set_action_state(self.sim7600.ActionState.GPS_SEND)
                 action_state = self.sim7600.get_action_state()
                 self.last_updated_to_cloud = now
 
-            if (action_state == self.sim7600.ActionState.GPS_SEND):
-                self.send_mqtt_to_cloud_api_sim7600(f"driver/location/{self.dev_id}", json.dumps({"id":self.dev_id,"lat":self.current_lat,"long":self.current_long}))
+            if (action_state == self.sim7600.ActionState.GPS_SEND and self.location_queue):
+                self.send_mqtt_to_cloud_api_sim7600(f"driver/location/{self.dev_id}", self.location_queue[0])
 
             if (action_state == self.sim7600.ActionState.MARK_SEND and self.mark_queue):
                 self.send_mqtt_to_cloud_api_sim7600(f"driver/mark_location/{self.dev_id}", self.mark_queue[0])
             
-            if self.sim7600.get_transmit_state() == self.sim7600.TransmitState.RESP_WAIT:
-                if now - self.sim7600.current_write_start > 5:
-                    print("Timeout, resetting state")
-                    print("action_state",action_state)
-                    print("transmit_state",self.sim7600.get_transmit_state())
-                    print("mqtt_state",self.sim7600.get_mqtt_send_state())
-                    print("receive_state",self.sim7600.get_receive_state())
-
-                    self.sim7600.clean_transmit()
-
-                    self.timeout_cnt += 1
-
-                    if action_state == self.sim7600.ActionState.MARK_SEND or action_state == self.sim7600.ActionState.GPS_SEND:
-                        print("Set to retry sending mark")
-
-                    else:
-                        self.sim7600.set_action_state(self.sim7600.ActionState.NONE)
-                else: self.timeout_cnt = 0
-
+            if self.sim7600.get_transmit_state() == self.sim7600.TransmitState.RESP_WAIT and now - self.sim7600.current_write_start > 5:
+                self.handle_timeout()
             time.sleep(0.1)
 
 if __name__ == "__main__":

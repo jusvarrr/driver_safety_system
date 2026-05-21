@@ -71,6 +71,9 @@ class SIM7600BaseApi:
 
         self.mqtt_payload = ""
 
+        self.cell_connected = False
+        self.previous_cell_connected = True
+
     def get_mqtt_send_state(self):
         return self.mqtt_send_state
     
@@ -149,6 +152,7 @@ class SIM7600BaseApi:
                 self.response_code = self.ResponseCode.POINTER
                 found_current = ordered_data.find(">") + 1
                 if found_current > found_last: found_last = found_current
+
             gps_index = ordered_data.find("+CGPSINFO:")
             if gps_index >= 0:
                 self.response_code = self.ResponseCode.CGPSINFO
@@ -157,6 +161,15 @@ class SIM7600BaseApi:
                     found_current = line_end + 2
                     if found_current > found_last: 
                         found_last = found_current
+            
+            if "+CREG:" in ordered_data:
+                matches = re.search(r"\+CREG:\s*\d,(\d)", ordered_data)
+                if matches:
+                    stat = int(matches.group(1))
+                    self.previous_cell_connected = self.cell_connected
+                    self.cell_connected = (stat == 1 or stat == 5)
+                    header_end = matches.end()
+                    if header_end > found_last: found_last = header_end
 
         if self.response_code != self.ResponseCode.NONE:
             print("getting response!")

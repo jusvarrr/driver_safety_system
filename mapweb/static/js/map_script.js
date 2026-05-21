@@ -295,4 +295,73 @@ manualCorrectionBtn.onclick = () => {
     .catch(err => console.error("Error sending manual adjustments:", err));
   }
 };
+
 controlContainer.appendChild(manualCorrectionBtn);
+
+const modeControlContainer = document.createElement('div');
+modeControlContainer.style.position = 'absolute';
+modeControlContainer.style.top = '10px';
+modeControlContainer.style.left = '10px';
+modeControlContainer.style.zIndex = '1000';
+
+function sendModeCommand(modeStr) {
+    fetch('/set_mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: modeStr })
+    })
+    .then(res => res.json())
+    .then(data => {
+        alert("System switched to: " + data.mode);
+        console.log("Mode switch successful:", data);
+        
+        document.getElementById('status-nav').innerText = "GNSS Stable";
+        document.getElementById('status-nav').style.color = '#2ecc71';
+    })
+    .catch(err => console.error("Error switching mode:", err));
+}
+
+const modeControlContainer = document.createElement('div');
+modeControlContainer.style.position = 'absolute';
+modeControlContainer.style.top = '10px';
+modeControlContainer.style.left = '10px';
+modeControlContainer.style.zIndex = '1000';
+const btnGps = document.createElement('button');
+btnGps.innerText = "Use GPS";
+btnGps.onclick = () => sendModeCommand('GPS');
+modeControlContainer.appendChild(btnGps);
+controlContainer.appendChild(modeControlContainer);
+
+const sendCurrentLocBtn = document.createElement('button');
+sendCurrentLocBtn.innerText = 'Send Current Location';
+sendCurrentLocBtn.style.padding = '8px 12px';
+sendCurrentLocBtn.style.backgroundColor = '#3498db';
+sendCurrentLocBtn.style.color = '#ffffff';
+sendCurrentLocBtn.style.border = '1px solid #ccc';
+sendCurrentLocBtn.style.borderRadius = '4px';
+sendCurrentLocBtn.style.cursor = 'pointer';
+sendCurrentLocBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+
+sendCurrentLocBtn.onclick = () => {
+    if (!vehicleMarker) {
+        alert("Lokacija dar nenustatyta!");
+        return;
+    }
+    const pos = vehicleMarker.getLngLat();
+    const markData = {
+        name: "Quick Loc. Share",
+        lon: pos.lng,
+        lat: pos.lat,
+        info: "Quick Share from the driver",
+        type: "markedEmergency",
+        sync_cloud: true
+    };
+
+    fetch('/mark', {
+        method: 'POST',
+        body: JSON.stringify(markData),
+        headers: { 'Content-Type': 'application/json' }
+    }).then(r => console.log("Current location sent!"));
+};
+
+controlContainer.appendChild(sendCurrentLocBtn);

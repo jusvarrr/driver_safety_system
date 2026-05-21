@@ -17,6 +17,8 @@
 #include <time.h>
 
 #define I2C_BUS                     "/dev/i2c-1"
+#define M_PI                        3.14159265358979323846
+#define METERS_PER_DEGREE           111132.0
 #define BNO055_ADDR                 0x28
 #define BNO055_OPR_MODE             0x3D
 #define BNO055_UNIT_SEL             0x3B
@@ -25,6 +27,7 @@
 #define BNO055_EULER_H_LSB          0x1A
 #define BNO055_LIA_X_LSB            0x28
 #define BNO055_LIA_Y_LSB            0x2A
+#define BNO055_EULER_H_LSB          0x1A
 
 #define HUB_SOCKET_PATH             "/tmp/system_hub.sock"
 #define BUFFER_SIZE                 128
@@ -61,6 +64,10 @@ static double anchor_lat = 0.0;
 static double anchor_lon = 0.0;
 static double current_lat = 0.0;
 static double current_lon = 0.0;
+
+static double filtered_acc_x = 0.0;
+static double filtered_acc_y = 0.0;
+#define ALPHA 0.2
 
 void signal_handler(int sig) {
     (void)sig;
@@ -153,9 +160,67 @@ int setup_bno055() {
 void update_dead_reckoning() {
     if (i2c_fd < 0) return;
 
-    uint8_t reg;
-    uint8_t data[6];
+    uint8_t yaw_reg = BNO055_EULER_H_LSB;
+    uint8_t yaw_buf[2];
+    write(i2c_fd, &yaw_reg, 1);
+    read(i2c_fd, yaw_buf, 2);
+
+    int16_t yaw_raw = (yaw_buf[1] << 8) | yaw_buf[0];
+    double yaw_deg = yaw_raw / 16.0; 
+    double yaw_rad = yaw_deg * (M_PI / 180.0);
+
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double dt = (now.tv_sec - last_time.tv_sec) + (now.tv_nsec - last_time.tv_nsec) / 1e9;
+    last_time = now;
+
+    uint8_t reg = BNO055_LIA_X_LSB;
+    uint8_t buffer[6];
     
+    write(i2c_fd, &reg, 1);
+    if (read(i2c_fd, buffer, 6) != 6) return;
+
+    int16_t x_raw = (buffer[1] << 8) | buffer[0];
+    int16_t y_raw = (buffer[3] << 8) | buffer[2];
+
+    double acc_x = x_raw / 100.0;
+    double acc_y = y_raw / 100.0;
+
+    if (fabs(acc_x) < 0.1) acc_x = 0; 
+    if (fabs(acc_y) < 0.1) acc_y = 0;
+
+    double global_acc_x = (acc_x * cos(yaw_rad)) - (acc_y * sin(yaw_rad));
+    double global_acc_y = (acc_x * sin(yaw_rad)) + (acc_y * cos(yaw_rad));
+
+    if (fabs(global_acc_x) < 0.15) global_acc_x = 0;
+    if (fabs(global_acc_y) < 0.15) global_acc_y = 0;
+
+    filtered_acc_x = (ALPHA * global_acc_x) + ((1.0 - ALPHA) * filtered_acc_x);
+    filtered_acc_y = (ALPHA * global_acc_y) + ((1.0 - ALPHA) * filtered_acc_y);
+
+    vel_x += filtered_acc_x * dt;
+    vel_y += filtered_acc_y * dt;
+
+    if (fabs(global_acc_x) < 0.01) vel_x = 0;
+    if (fabs(global_acc_y) < 0.01) vel_y = 0;
+
+    pos_x += vel_x * dt;
+    pos_y += vel_y * dt;
+
+    double lat_offset = pos_y / METERS_PER_DEGREE;
+    double lon_offset = pos_x / (METERS_PER_DEGREE * cos(anchor_lat * M_PI / 180.0));
+
+    current_lat = anchor_lat + lat_offset;
+    current_lon = anchor_lon + lon_offset;
+
+    static int log_counter = 0;
+    if (log_counter++ % 50 == 0) {
+        char dr_payload[128];
+        snprintf(dr_payload, sizeof(dr_payload), "{\"lat\": %f, \"lon\": %f}", current_lat, current_lon);
+        send_hub_message("location/dr_update", dr_payload);
+        printf("[DR DEBUG] Acc: %.2f, %.2f | Vel: %.2f, %.2f | Pos: %.2f, %.2f\n", 
+                acc_x, acc_y, vel_x, vel_y, pos_x, pos_y);
+    }
 }
 
 void update_leds() {
@@ -220,6 +285,27 @@ void process_message(const char *msg) {
                 pos_x = 0.0; pos_y = 0.0;
                 printf("No Gnss! Starting calculate at %f, %f with DR.\n", anchor_lat, anchor_lon);
             }
+        }
+    }
+
+    int parsed_gps_man = sscanf(msg, "{\"topic\": \"%63[^\"]\", \"data\": {\"lon\": %lf, \"lat\": %lf}}", topic, &lon_val, &lat_val);
+    if (parsed_gps_man != 3) {
+        parsed_gps_man = sscanf(msg, "{\"topic\":\"%63[^\"]\",\"data\":{\"lon\":%lf,\"lat\":%lf}}", topic, &lon_val, &lat_val);
+    }
+    if (parsed_gps_man == 3) {
+        if (strcmp(topic, "location/manual_correction") == 0) {
+            anchor_lat = lat_val;
+            anchor_lon = lon_val;
+            current_lat = lat_val;
+            current_lon = lon_val;
+            
+            printf("Dead Reckoning initiated at anchor: %f, %f\n", current_dr_lat, current_dr_lon);
+        }
+    } 
+    else if (strcmp(topic, "system/gps_mode") == 0) {
+        if (strstr(payload, "GPS")) {
+            gnss_conn = 1; // Stop DR, resume expecting GPS
+            printf("Dead Reckoning stopped. Awaiting GPS.\n");
         }
     }
 }
