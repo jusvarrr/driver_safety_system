@@ -40,7 +40,7 @@ statusPanel.style.gap = '5px';
 statusPanel.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
 statusPanel.innerHTML = `
   <div style="font-weight: bold; border-bottom: 1px solid #7f8c8d; padding-bottom: 3px; margin-bottom: 3px;">System info</div>
-  <div>Navigation mode: <span id="status-nav" style="color: #2ecc71; font-weight: bold;">GNSS (Stabilus)</span></div>
+  <div>Navigation mode: <span id="status-nav" style="color: #c4c4c4; font-weight: bold;">Laukiama Statuso</span></div>
 `;
 
 socket.onopen = () => {
@@ -207,6 +207,32 @@ toggleMarksBtn.onclick = () => {
   console.log(`Marks visibility changed. Visible: ${marksVisible}`);
 };
 
+const manualCorrectionOffBtn = document.createElement('button');
+manualCorrectionOffBtn.innerText = 'Manual Correction Off';
+manualCorrectionOffBtn.style.padding = '8px 12px';
+manualCorrectionOffBtn.style.backgroundColor = '#ffffff';
+manualCorrectionOffBtn.style.border = '1px solid #ccc';
+manualCorrectionOffBtn.style.borderRadius = '4px';
+manualCorrectionOffBtn.style.cursor = 'pointer';
+manualCorrectionOffBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+manualCorrectionOffBtn.style.visibility = 'hidden';
+
+manualCorrectionOffBtn.onclick = () => {
+  console.log("Post data (mark):", markData);
+
+  fetch('/off_manual_correct', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  .then(response => response.json())
+  .then(res => {
+    if (res.status === "ok") {
+      console.log("Flask manual correction off sent to UDS hub.");
+    }
+  })
+  .catch(err => console.error("Error in request:", err));
+};
+
 controlContainer.appendChild(statusPanel);
 controlContainer.appendChild(toggleMarksBtn);
 
@@ -291,6 +317,7 @@ manualCorrectionBtn.onclick = () => {
     .then(response => response.json())
     .then(res => {
       console.log("Processed change status successfully:", res);
+      manualCorrectionOffBtn.style.visibility = 'visible';
     })
     .catch(err => console.error("Error sending manual adjustments:", err));
   }
@@ -304,32 +331,6 @@ modeControlContainer.style.top = '10px';
 modeControlContainer.style.left = '10px';
 modeControlContainer.style.zIndex = '1000';
 
-function sendModeCommand(modeStr) {
-    fetch('/set_mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: modeStr })
-    })
-    .then(res => res.json())
-    .then(data => {
-        alert("System switched to: " + data.mode);
-        console.log("Mode switch successful:", data);
-        
-        document.getElementById('status-nav').innerText = "GNSS Stable";
-        document.getElementById('status-nav').style.color = '#2ecc71';
-    })
-    .catch(err => console.error("Error switching mode:", err));
-}
-
-const modeControlContainer = document.createElement('div');
-modeControlContainer.style.position = 'absolute';
-modeControlContainer.style.top = '10px';
-modeControlContainer.style.left = '10px';
-modeControlContainer.style.zIndex = '1000';
-const btnGps = document.createElement('button');
-btnGps.innerText = "Use GPS";
-btnGps.onclick = () => sendModeCommand('GPS');
-modeControlContainer.appendChild(btnGps);
 controlContainer.appendChild(modeControlContainer);
 
 const sendCurrentLocBtn = document.createElement('button');
@@ -365,3 +366,5 @@ sendCurrentLocBtn.onclick = () => {
 };
 
 controlContainer.appendChild(sendCurrentLocBtn);
+
+controlContainer.appendChild(manualCorrectionOffBtn);

@@ -24,7 +24,6 @@
 #define BNO055_UNIT_SEL             0x3B
 #define MODE_NDOF                   0x0C
 
-#define BNO055_EULER_H_LSB          0x1A
 #define BNO055_LIA_X_LSB            0x28
 #define BNO055_LIA_Y_LSB            0x2A
 #define BNO055_EULER_H_LSB          0x1A
@@ -47,7 +46,7 @@
 
 static int running = 1;
 static int i2c_fd = -1;
-static int cell_conn = 0, gnss_conn = 0, cam_stat = 0, buzzer = 0;
+static int cell_conn = 0, gnss_conn_lost = 0, cam_stat = 0, buzzer = 0;
 
 static struct gpiod_chip *chip = NULL;
 static struct gpiod_line_request *input_req = NULL;
@@ -68,6 +67,8 @@ static double current_lon = 0.0;
 static double filtered_acc_x = 0.0;
 static double filtered_acc_y = 0.0;
 #define ALPHA 0.2
+
+void send_hub_message(const char *topic, const char *json_payload);
 
 void signal_handler(int sig) {
     (void)sig;
@@ -103,6 +104,8 @@ int setup_gpio() {
 
     struct gpiod_line_settings *in_settings = gpiod_line_settings_new();
     gpiod_line_settings_set_direction(in_settings, GPIOD_LINE_DIRECTION_INPUT);
+
+    gpiod_line_settings_set_bias(in_settings, GPIOD_LINE_BIAS_PULL_DOWN);
     
     struct gpiod_line_config *in_cfg = gpiod_line_config_new();
     unsigned int in_offsets[] = {BTN_CELL_CONN_TOGGLE, BTN_QUICK_LOCATION_SHARE, BTN_TRAVEL_LOG_DELETE, BTN_BUZZER_OFF};
@@ -159,6 +162,7 @@ int setup_bno055() {
 
 void update_dead_reckoning() {
     if (i2c_fd < 0) return;
+    printf("[DR ERRORendtered!\n"); 
 
     uint8_t yaw_reg = BNO055_EULER_H_LSB;
     uint8_t yaw_buf[2];
@@ -176,9 +180,13 @@ void update_dead_reckoning() {
 
     uint8_t reg = BNO055_LIA_X_LSB;
     uint8_t buffer[6];
+
     
     write(i2c_fd, &reg, 1);
-    if (read(i2c_fd, buffer, 6) != 6) return;
+    if (read(i2c_fd, buffer, 6) != 6) {
+        printf("[DR ERROR] Failed to read BNO055 I2C data!\n"); // ADD THIS
+        return;
+    }
 
     int16_t x_raw = (buffer[1] << 8) | buffer[0];
     int16_t y_raw = (buffer[3] << 8) | buffer[2];
@@ -213,20 +221,17 @@ void update_dead_reckoning() {
     current_lat = anchor_lat + lat_offset;
     current_lon = anchor_lon + lon_offset;
 
-    static int log_counter = 0;
-    if (log_counter++ % 50 == 0) {
-        char dr_payload[128];
-        snprintf(dr_payload, sizeof(dr_payload), "{\"lat\": %f, \"lon\": %f}", current_lat, current_lon);
-        send_hub_message("location/dr_update", dr_payload);
-        printf("[DR DEBUG] Acc: %.2f, %.2f | Vel: %.2f, %.2f | Pos: %.2f, %.2f\n", 
-                acc_x, acc_y, vel_x, vel_y, pos_x, pos_y);
-    }
+    char dr_payload[128];
+    snprintf(dr_payload, sizeof(dr_payload), "{\"lat\": %f, \"lon\": %f}", current_lat, current_lon);
+    send_hub_message("location/dr", dr_payload);
+    printf("[DR DEBUG] Acc: %.2f, %.2f | Vel: %.2f, %.2f | Pos: %.2f, %.2f\n", 
+            acc_x, acc_y, vel_x, vel_y, pos_x, pos_y);
 }
 
 void update_leds() {
     enum gpiod_line_value values[] = {
         cell_conn ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
-        gnss_conn ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
+        !gnss_conn_lost ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
         cam_stat  ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE
     };
     if (gpiod_line_request_set_values(output_req, values) < 0) {
@@ -246,67 +251,6 @@ void toggle_buzzer() {
         buzzer = 0;
         buzzer_turn_off = false;
         printf("Set buzzer OFF\n");
-    }
-}
-
-void process_message(const char *msg) {
-    char topic[64] = {0};
-    int val = 0;
-    double lat_val = 0.0, lon_val = 0.0;
-
-    int parsed = sscanf(msg, "{\"topic\": \"%63[^\"]\", \"data\": {\"state\": %d}}", topic, &val);
-    if (parsed != 2) {
-        parsed = sscanf(msg, "{\"topic\":\"%63[^\"]\",\"data\":{\"state\":%d}}", topic, &val);
-    }
-
-    if (parsed == 2) {
-        printf("Debug State Parsed: Topic=%s, Val=%d\n", topic, val);
-        
-        if (strcmp(topic, "conn_stat/cell") == 0) cell_conn = val;
-        else if (strcmp(topic, "alert/buzzer") == 0) buzzer = val;
-        return;
-    }
-
-    int parsed_gps = sscanf(msg, "{\"topic\": \"%63[^\"]\", \"data\": {\"state\":%d, \"lon\": %lf, \"lat\": %lf}}", topic, &val, &lon_val, &lat_val);
-    if (parsed_gps != 4) {
-        parsed_gps = sscanf(msg, "{\"topic\":\"%63[^\"]\",\"data\":{\"state\":%d,\"lon\":%lf,\"lat\":%lf}}", topic, &val, &lon_val, &lat_val);
-    }
-
-    if (parsed_gps == 4) {
-        if (strcmp(topic, "conn_stat/gnss") == 0) {
-            gnss_conn = val;
-            if (gnss_conn == 1) {
-                anchor_lat = lat_val;
-                anchor_lon = lon_val;
-                current_lat = lat_val;
-                current_lon = lon_val;
-            } else {
-                vel_x = 0.0; vel_y = 0.0;
-                pos_x = 0.0; pos_y = 0.0;
-                printf("No Gnss! Starting calculate at %f, %f with DR.\n", anchor_lat, anchor_lon);
-            }
-        }
-    }
-
-    int parsed_gps_man = sscanf(msg, "{\"topic\": \"%63[^\"]\", \"data\": {\"lon\": %lf, \"lat\": %lf}}", topic, &lon_val, &lat_val);
-    if (parsed_gps_man != 3) {
-        parsed_gps_man = sscanf(msg, "{\"topic\":\"%63[^\"]\",\"data\":{\"lon\":%lf,\"lat\":%lf}}", topic, &lon_val, &lat_val);
-    }
-    if (parsed_gps_man == 3) {
-        if (strcmp(topic, "location/manual_correction") == 0) {
-            anchor_lat = lat_val;
-            anchor_lon = lon_val;
-            current_lat = lat_val;
-            current_lon = lon_val;
-            
-            printf("Dead Reckoning initiated at anchor: %f, %f\n", current_dr_lat, current_dr_lon);
-        }
-    } 
-    else if (strcmp(topic, "system/gps_mode") == 0) {
-        if (strstr(payload, "GPS")) {
-            gnss_conn = 1; // Stop DR, resume expecting GPS
-            printf("Dead Reckoning stopped. Awaiting GPS.\n");
-        }
     }
 }
 
@@ -335,17 +279,66 @@ int connect_to_hub() {
     return 0;
 }
 
-void send_hub_message(const char *topic, const char *json_payload) {
-    if (hub_fd < 0) return;
+static char hub_rx_buffer[4096];
+static int hub_rx_len = 0;
 
-    char buffer[BUFFER_SIZE * 2];
-    snprintf(buffer, sizeof(buffer), "{\"topic\": \"%s\", \"data\": %s}\n", topic, json_payload);
+void process_hub_message(const char *msg) {
+    char topic[64] = {0};
+    
+    // Safely extract Topic
+    char *topic_start = strstr(msg, "\"topic\":");
+    if (topic_start) {
+        sscanf(topic_start, "\"topic\": \"%63[^\"]\"", topic);
+    } else {
+        return;
+    }
 
-    int ret = write(hub_fd, buffer, strlen(buffer));
-    if (ret <= 0) {
-        perror("write to hub");
-        close(hub_fd);
-        hub_fd = -1;
+    int val = 0;
+    double lat_val = 0.0, lon_val = 0.0;
+
+    // Safely extract variables regardless of JSON order or spacing
+    char *state_ptr = strstr(msg, "\"state\":");
+    if (state_ptr) sscanf(state_ptr, "\"state\": %d", &val);
+
+    char *lat_ptr = strstr(msg, "\"lat\":");
+    if (lat_ptr) sscanf(lat_ptr, "\"lat\": %lf", &lat_val);
+
+    char *lon_ptr = strstr(msg, "\"lon\":");
+    if (lon_ptr) sscanf(lon_ptr, "\"lon\": %lf", &lon_val);
+
+    // --- Logic Routing ---
+    if (strcmp(topic, "conn_stat/cell") == 0 && state_ptr) {
+        cell_conn = !val;
+    } 
+    else if (strcmp(topic, "alert/buzzer") == 0 && state_ptr) {
+        buzzer = val;
+    } 
+    else if (strcmp(topic, "conn_stat/gnss") == 0 && state_ptr) {
+        gnss_conn_lost = !val;
+        if (gnss_conn_lost && lat_ptr && lon_ptr) {
+            anchor_lat = lat_val; anchor_lon = lon_val;
+            current_lat = lat_val; current_lon = lon_val;
+        } else if (!gnss_conn_lost) {
+            anchor_lat = lat_val; anchor_lon = lon_val;
+            vel_x = 0.0; vel_y = 0.0; pos_x = 0.0; pos_y = 0.0;
+            current_lat = lat_val; current_lon = lon_val;
+            printf("[DR] GNSS recovered. Swapped to Dead Reckoning at anchor: %f, %f\n", anchor_lat, anchor_lon);
+        }
+    } 
+    else if (strcmp(topic, "location/manual_correction") == 0) {
+        if (lat_ptr && lon_ptr) {
+            gnss_conn_lost = 1; // Force GNSS off to trigger Dead Reckoning
+            anchor_lat = lat_val; anchor_lon = lon_val;
+            current_lat = lat_val; current_lon = lon_val;
+            vel_x = 0.0; vel_y = 0.0; pos_x = 0.0; pos_y = 0.0;
+            printf("[DR] Manual Override! DR running from new anchor: %f, %f\n", anchor_lat, anchor_lon);
+        }
+    }
+    else if (strcmp(topic, "system/gps_mode") == 0) {
+        if (strstr(msg, "\"GPS\"")) {
+            gnss_conn_lost = 0; // Pause DR
+            printf("[DR] System commanded back to GPS mode. DR paused.\n");
+        }
     }
 }
 
@@ -359,23 +352,48 @@ void check_hub_messages() {
     pfd.fd = hub_fd;
     pfd.events = POLLIN;
 
-    int ret = poll(&pfd, 1, 10);
-    if (ret < 0) {
-        if (errno != EINTR) perror("poll hub");
-        return;
-    }
-
-    if (ret > 0 && (pfd.revents & POLLIN)) {
-        char buffer[BUFFER_SIZE * 2];
-        int bytes = read(hub_fd, buffer, sizeof(buffer) - 1);
+    if (poll(&pfd, 1, 10) > 0 && (pfd.revents & POLLIN)) {
+        int bytes = read(hub_fd, hub_rx_buffer + hub_rx_len, sizeof(hub_rx_buffer) - hub_rx_len - 1);
         if (bytes <= 0) {
             printf("Hub disconnected\n");
             close(hub_fd);
             hub_fd = -1;
+            hub_rx_len = 0;
             return;
         }
-        buffer[bytes] = '\0';
-        process_message(buffer);
+        
+        hub_rx_len += bytes;
+        hub_rx_buffer[hub_rx_len] = '\0';
+
+        // Process line by line
+        char *line_start = hub_rx_buffer;
+        char *newline;
+        while ((newline = strchr(line_start, '\n')) != NULL) {
+            *newline = '\0';
+            process_hub_message(line_start);
+            line_start = newline + 1;
+        }
+
+        // Keep incomplete chunks in the buffer for the next read
+        int remaining = hub_rx_len - (line_start - hub_rx_buffer);
+        if (remaining > 0) {
+            memmove(hub_rx_buffer, line_start, remaining);
+        }
+        hub_rx_len = remaining;
+    }
+}
+
+void send_hub_message(const char *topic, const char *json_payload) {
+    if (hub_fd < 0) return;
+
+    char buffer[BUFFER_SIZE * 2];
+    snprintf(buffer, sizeof(buffer), "{\"topic\": \"%s\", \"data\": %s}\n", topic, json_payload);
+
+    int ret = write(hub_fd, buffer, strlen(buffer));
+    if (ret <= 0) {
+        perror("write to hub");
+        close(hub_fd);
+        hub_fd = -1;
     }
 }
 
@@ -418,13 +436,27 @@ int main() {
     const char *topics[] = {"button/cell", "button/loc", "button/del"};
     const char *payloads[] = {"{\"state\": 1}", "{\"state\": 1}", "{\"state\": 1}"};
 
+    struct timespec last_dr_time;
+    clock_gettime(CLOCK_MONOTONIC, &last_dr_time);
+    long dr_interval_ns = 1000000000L;
+
     while (running) {
         check_hub_messages();
         update_leds();
         toggle_buzzer();
 
-        if (gnss_conn == 0)
-            update_dead_reckoning();        
+        if (gnss_conn_lost) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+
+            long elapsed_ns = (now.tv_sec - last_dr_time.tv_sec) * 1000000000L + 
+                              (now.tv_nsec - last_dr_time.tv_nsec);
+
+            if (elapsed_ns >= dr_interval_ns) {
+                update_dead_reckoning();
+                last_dr_time = now;
+            }
+        }   
         enum gpiod_line_value vals[4];
         gpiod_line_request_get_values(input_req, vals);
 

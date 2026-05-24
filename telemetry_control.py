@@ -20,7 +20,7 @@ class TelemetryControl:
 
     def __init__(self):
         self.sim7600 = SIM7600BaseApi()
-        self.dev_id = "RPi-Bakalauras-2026"
+        #self.dev_id = "RPi-Bakalauras-2026"
         self.moving_speed = 100
         self.send_rate = 30
         self.send_rate_manual = 0
@@ -54,6 +54,11 @@ class TelemetryControl:
         self.last_reconnect_try = 0
         self.mqtt_needs_reconnect = False
         self.data_mode = 'GPS'
+        self.fallback_to_gnss = True
+
+        self.ws = None
+
+        self.connection_toggle_commanded = False
 
         self.connect_to_hub()
 
@@ -75,7 +80,7 @@ class TelemetryControl:
 
         try:
             if data_type == self.ToFlaskType.COORDS:
-                if self.location_valid:
+                if self.location_valid and self.data_mode == 'GPS':
                     self.notified_no_gnss = False
                     msg = {"topic": "conn_stat/gnss", "data": {"state": 1, "lon": self.current_long, "lat": self.current_lat}}
                     self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
@@ -139,17 +144,24 @@ class TelemetryControl:
                             self.data_mode = 'GPS'
                             print("Data source mode switched to: GPS. Resuming sensor reads.")
 
-                        if topic == "location/dr_update":
-                            print(f"Applying manual correction: {data}")
+                        if topic == "location/dr":
+                            print(f"Applying DR location update: {data}")
                             self.data_mode = 'MANUAL'
-                            
+
                             self.current_lat = data['lat']
                             self.current_long = data['lon']
                             self.location_valid = True
-                        
+
+                            self.update_server(self.ToFlaskType.COORDS, None)
+
+                        if topic == "location/manual_correction":
+                            self.fallback_to_gnss = False
+
+                        if topic == "location/manual_correction_off":
+                            self.fallback_to_gnss = True
+                            
                         elif topic == "button/cell":
-                            print("Button pressed - disconnect from cellular")
-                            self.sim7600.send_command("AT+CGACT=0,1")
+                            self.connection_toggle_commanded = True
 
         except BlockingIOError:
             pass
@@ -175,8 +187,7 @@ class TelemetryControl:
 
         if not match_list:
             self.location_valid = False
-            self.current_lat, self.current_long = 54.8985, 23.9036 #testing
-            return {}
+            return {}  # preserve last known position so DR anchor stays valid
         else:
             match = match_list[0]
             now = datetime.datetime.now()
@@ -250,13 +261,24 @@ class TelemetryControl:
         self.sim7600.send_command_sleep("AT+CREG?", 3)
         self.sim7600.send_command_sleep("AT+CGATT=1")
         self.sim7600.send_command_sleep("AT+CGACT=1,1")
+        self.sim7600.cell_connected = True
         print("SIM7600 ready for sending to cloud")
+
+        self.sim7600.modem.reset_input_buffer()
+
+    def sim7600_disconnect_from_services(self):
+        self.sim7600.send_command_sleep("AT+CMQTTDISC=0,60", 1)
+        self.sim7600.send_command_sleep("AT+CMQTTREL=0", 1)
+        self.sim7600.send_command_sleep("AT+CGACT=0,1")
 
     def sim7600_restore_services(self):
         now = time.time()
+        print("Restoring...")
+
         if now - self.last_creg_check > 15 and self.sim7600.get_action_state() == self.sim7600.ActionState.NONE:
-                self.sim7600.send_command("AT+CREG?")
-                self.last_creg_check = now
+            print("Check netw...")
+            self.sim7600.send_command("AT+CREG?")
+            self.last_creg_check = now
 
         if not self.sim7600.cell_connected:
             if now - self.last_reconnect_try > 20:
@@ -266,11 +288,10 @@ class TelemetryControl:
                 self.last_reconnect_try = now
                 self.mqtt_needs_reconnect = True
         else:
-            if not self.mqtt_needs_reconnect:
+            if self.mqtt_needs_reconnect:
                 print("Network reconnected, starting MQTT...")
                 self.setup_mqtt()
                 self.mqtt_needs_reconnect = False
-
 
     def sim7600_read_gps(self):
         self.sim7600.send_command("AT+CGPSINFO")
@@ -295,6 +316,10 @@ class TelemetryControl:
         elif action_state == self.sim7600.ActionState.GPS_RECV:
             if "+CGPSINFO" in res:
                 self.parse_gps(res)
+                if self.location_valid and self.data_mode == 'MANUAL':
+                    self.data_mode = 'GPS'
+                    self.notified_no_gnss = False
+                    print("GNSS recovered. Switching back to GPS mode.")
                 self.update_server(self.ToFlaskType.COORDS, self.current_location_json)
                 self.sim7600.set_action_state(self.sim7600.ActionState.NONE)
         elif action_state in [self.sim7600.ActionState.GPS_SEND, self.sim7600.ActionState.MARK_SEND] and self.sim7600.mqtt_send_state == self.sim7600.MQTTSendState.PUB_DONE:
@@ -340,16 +365,29 @@ class TelemetryControl:
                 self.location_queue.popleft()
 
         elif mqtt_state == self.sim7600.MQTTSendState.PUB_DONE:
-            if self.sim7600.action_state in [self.sim7600.ActionState.MARK_SEND, self.sim7600.ActionState.MARK_SEND]: 
+            if self.sim7600.action_state in [self.sim7600.ActionState.MARK_SEND, self.sim7600.ActionState.GPS_SEND]: 
                 self.error_cnt = 0
 
+    def toggle_connection(self):
+        self.connection_toggle_commanded = False
+        if self.sim7600.cell_connected:
+            self.sim7600_disconnect_from_services()
+            self.sim7600.cell_connected = False
+            print("Executing button - disconnect from cellular")
+            
+        else:
+            self.sim7600_setup()
+            self.setup_mqtt()
+            self.sim7600.cell_connected = True
+            print("Executing button - connect to cellular")
 
     def run(self):
         self.dev_id = self.get_tracker_id()
         if (self.dev_id is None):
-            if app.ws:
-                app.ws.close()
+            if self.ws:
+                self.ws.close()
             print("Configuration is needed to create identification text file!")
+            return
 
         self.sim7600_setup()
         self.setup_mqtt()
@@ -378,15 +416,26 @@ class TelemetryControl:
             if self.error_cnt > 10:
                 self.sim7600.clean_transmit()
                 self.mqtt_needs_reconnect = True
+                #self.sim7600_restore_services()
                 continue
+
+            #self.sim7600_restore_services()
 
             send_rate_no_manual = self.get_send_to_cloud_rate(self.moving_speed)
             to_cloud_rate = self.send_rate_manual if self.is_send_rate_manual else send_rate_no_manual
 
             if now - self.last_updated_to_cloud > to_cloud_rate:
-                self.location_queue.append(json.dumps({"id": self.dev_id, "lat": self.current_lat, "long": self.current_long}))
+                print(f"Time to send... {self.current_lat} {self.current_long}")
+                if (self.current_lat > 0 and self.current_long > 0):
+                    self.location_queue.append(json.dumps({"id": self.dev_id, "lat": self.current_lat, "long": self.current_long}))
+                self.last_updated_to_cloud = now
                 
-            if self.data_mode == 'GPS' and now - self.last_updated_to_maps > 1 and action_state == self.sim7600.ActionState.NONE:
+            if self.connection_toggle_commanded and action_state == self.sim7600.ActionState.NONE:
+                self.toggle_connection()
+                continue
+
+            gps_poll_rate = 1 if self.data_mode == 'GPS' else 5
+            if self.fallback_to_gnss and now - self.last_updated_to_maps > gps_poll_rate and action_state == self.sim7600.ActionState.NONE:
                 self.sim7600.set_action_state(self.sim7600.ActionState.GPS_RECV)
                 self.sim7600_read_gps()
                 self.last_updated_to_maps = now
@@ -399,7 +448,9 @@ class TelemetryControl:
             elif self.sim7600.cell_connected and self.location_queue and action_state == self.sim7600.ActionState.NONE:
                 self.sim7600.set_action_state(self.sim7600.ActionState.GPS_SEND)
                 action_state = self.sim7600.get_action_state()
-                self.last_updated_to_cloud = now
+
+            elif self.sim7600.cell_connected and self.location_queue:
+                print("for some reason cell connected fucked")
 
             if (action_state == self.sim7600.ActionState.GPS_SEND and self.location_queue):
                 self.send_mqtt_to_cloud_api_sim7600(f"driver/location/{self.dev_id}", self.location_queue[0])

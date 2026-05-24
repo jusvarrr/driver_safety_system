@@ -75,6 +75,9 @@ def db_worker():
 
 threading.Thread(target=db_worker, daemon=True).start()
 
+if os.path.exists(SOCKET_PATH):
+    os.chmod(SOCKET_PATH, 0o666)
+
 def main():
     if os.path.exists(SOCKET_PATH):
         os.remove(SOCKET_PATH)

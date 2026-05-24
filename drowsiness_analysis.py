@@ -33,6 +33,7 @@ def send_buzzer(state):
             hub_sock.close()
         except:
             pass
+        time.sleep(1)
         hub_sock = connect()
 
 def cam_term(signum, frame):
@@ -108,7 +109,7 @@ while True:
         last_buzzer_state = state
 
     #cv2.imshow("DMS - Profile Support", frame)
-    time.sleep(0.01)
+    time.sleep(0.15)
     #if cv2.waitKey(1) == ord('q'): break
 
 picam2.stop()

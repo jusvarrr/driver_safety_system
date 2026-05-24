@@ -40,16 +40,28 @@ def manual_correct():
     if not payload:
         return jsonify({"status": "error", "message": "Missing configuration data"}), 400
     
-    data = {"lat": payload.get("lat"),
-            "lon": payload.get("lon"),
-            "orient_offset": payload.get("orient_offset")
+    data = {"lon": payload.get("lon"),
+            "lat": payload.get("lat")
         }
     
     try:
-        send_to_hub("location/manual_correction", data)
+        if send_to_hub("location/manual_correction", data):
+            return jsonify({"status": "success", "message": "Manual correction broadcasted"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to send to system hub"}), 500
         
-        print(f"Successfully sent manual correction to UDS: {data}")
-        return jsonify({"status": "ok", "message": "Corrections pushed to UDS network"})
+    except socket.error as e:
+        print(f"UDS connection failure: {e}")
+        return jsonify({"status": "error", "message": "UDS Broker unreachable"}), 500
+    
+@app.route('/off_manual_correct', methods=['POST'])
+def off_manual_correct():    
+    data = {}
+    try:
+        if send_to_hub("location/manual_correction_off", data):
+            return jsonify({"status": "success", "message": "Manual correction off broadcasted"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to send to system hub"}), 500
         
     except socket.error as e:
         print(f"UDS connection failure: {e}")
