@@ -53,7 +53,7 @@ class TelemetryControl:
         self.last_creg_check = 0
         self.last_reconnect_try = 0
         self.mqtt_needs_reconnect = False
-        self.data_mode = 'GPS'
+        self.data_mode = 'NONE'
         self.fallback_to_gnss = True
 
         self.ws = None
@@ -88,14 +88,20 @@ class TelemetryControl:
                     msg = {"topic": "location/gnss", "data": {"lon": self.current_long, "lat": self.current_lat}}
                     self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
                 else:
-                    if not self.notified_no_gnss and self.current_long and self.current_lat:
+                    if not self.notified_no_gnss and not self.location_valid:
                         msg = {"topic": "conn_stat/gnss", "data": {"state": 0, "lon": self.current_long, "lat": self.current_lat}}
                         self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
                         self.notified_no_gnss = True
                         print("GNSS Lost. Passing tracking baton to IMU Dead Reckoning.")
                 
             elif data_type == self.ToFlaskType.MARK:
-                if payload and isinstance(payload, dict):
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except json.JSONDecodeError as e:
+                        print(f"Failed to parse mark payload: {e}")
+                        return
+                if isinstance(payload, dict):
                     if 'long' in payload:
                         payload['lon'] = payload.pop('long')
                     elif 'longitude' in payload:
@@ -105,7 +111,7 @@ class TelemetryControl:
                 self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
 
         except BlockingIOError:
-            pass  # broker receive buffer temporarily full — keep connection, retry next cycle
+            pass
         except Exception as ex: 
             print(f"Failed to send data to hub: {ex}")
             self.hub_sock = None
@@ -130,7 +136,7 @@ class TelemetryControl:
                         topic = msg.get("topic")
                         data = msg.get("data")
                         
-                        if topic in ["marks/local", "button/loc"] and data:
+                        if topic in ["marks/local", "button/loc"]:
                             print(f"Received new marking event from system ({topic}), pushing to SIM7600 queue...")
                             mark_to_send = json.dumps({
                                 "name": data.get('name', 'Emergency mark'),
@@ -139,12 +145,8 @@ class TelemetryControl:
                                 "info": data.get('info', 'Quick action mark'),
                                 "type": data.get('type', 'markedEmergency')
                             })
-                            if data.get('sync_cloud', False):
+                            if data.get('sync_cloud', False) or topic == "button/loc":
                                 self.mark_queue.append(mark_to_send)
-
-                        if topic == "system/gps_mode":
-                            self.data_mode = 'GPS'
-                            print("Data source mode switched to: GPS. Resuming sensor reads.")
 
                         if topic == "location/dr":
                             print(f"Applying DR location update: {data}")
@@ -152,7 +154,6 @@ class TelemetryControl:
 
                             self.current_lat = data['lat']
                             self.current_long = data['lon']
-                            self.location_valid = True
 
                             self.update_server(self.ToFlaskType.COORDS, None)
 
@@ -372,6 +373,10 @@ class TelemetryControl:
 
     def toggle_connection(self):
         self.connection_toggle_commanded = False
+
+        msg = {"topic": "conn_stat/cell", "data": {"state": self.sim7600.cell_connected}}
+        self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
+
         if self.sim7600.cell_connected:
             self.sim7600_disconnect_from_services()
             self.sim7600.cell_connected = False

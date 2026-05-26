@@ -1,3 +1,64 @@
+const style = document.createElement('style');
+style.innerHTML = `
+  .control-container {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .system-status-panel {
+    padding: 10px;
+    background-color: rgba(44, 62, 80, 0.9);
+    color: #ffffff;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  }
+  .status-header {
+    font-weight: bold;
+    border-bottom: 1px solid #7f8c8d;
+    padding-bottom: 3px;
+    margin-bottom: 3px;
+  }
+  .status-nav-text {
+    color: #c4c4c4;
+    font-weight: bold;
+  }
+  .nav-btn {
+    padding: 8px 12px;
+    background-color: #ffffff;
+    color: #000000;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  }
+  .btn-blue {
+    background-color: #3498db;
+    color: #ffffff;
+  }
+  .btn-red {
+    background-color: #e74c3c;
+    color: #ffffff;
+  }
+  .btn-yellow {
+    background-color: #f1c40f;
+    color: #000000;
+  }
+  .rotation-slider {
+    width: 100%;
+    margin-top: 4px;
+  }
+`;
+document.head.appendChild(style);
+
 const map = new maplibregl.Map({
   style: "http://10.3.141.1:5000/style.json",
   container: 'pymaplibregl',
@@ -14,8 +75,7 @@ arrowEl.innerHTML = `
 `;
 
 let vehicleMarker = null;
-
-let correctionStep = 0; // 0 = not enabled, 1 = coordinates, 2 = rotation
+let correctionStep = 0; 
 let tempLat = null;
 let tempLon = null;
 let tempCourse = 0;
@@ -27,28 +87,17 @@ let marksVisible = true;
 const socket = new WebSocket('ws://' + window.location.hostname + ':5000/ws');
 
 const statusPanel = document.createElement('div');
-statusPanel.id = 'system-status-panel';
-statusPanel.style.padding = '10px';
-statusPanel.style.backgroundColor = 'rgba(44, 62, 80, 0.9)';
-statusPanel.style.color = '#ffffff';
-statusPanel.style.borderRadius = '4px';
-statusPanel.style.fontSize = '12px';
-statusPanel.style.fontFamily = 'sans-serif';
-statusPanel.style.display = 'flex';
-statusPanel.style.flexDirection = 'column';
-statusPanel.style.gap = '5px';
-statusPanel.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+statusPanel.className = 'system-status-panel';
 statusPanel.innerHTML = `
-  <div style="font-weight: bold; border-bottom: 1px solid #7f8c8d; padding-bottom: 3px; margin-bottom: 3px;">System info</div>
-  <div>Navigation mode: <span id="status-nav" style="color: #c4c4c4; font-weight: bold;">Laukiama Statuso</span></div>
+  <div class="status-header">System info</div>
+  <div>Navigation mode: <span id="status-nav" class="status-nav-text">Waiting for GNSS signal</span></div>
 `;
 
 socket.onopen = () => {
   console.log("WebSocket connected.");
 };
 
-map.on('load', () => {
-  socket.onmessage = (event) => {
+socket.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
       const topic = msg.topic;
@@ -58,6 +107,13 @@ map.on('load', () => {
 
       if (topic === 'marks/local' || topic === 'marks/cloud' || topic === 'button/loc') {
         addMarkToMap(payload);
+      }
+      else if (topic === 'db/response' && msg.req_id === 'init_marks') {
+        if (Array.isArray(payload)) {
+          payload.forEach(mark => {
+            addMarkToMap(mark);
+          });
+        }
       }
       else if (topic === 'location/gnss' || topic === 'location/dr') {
         const navStatusEl = document.getElementById('status-nav');
@@ -107,6 +163,9 @@ map.on('load', () => {
       console.error("Error in WS message:", err);
     }
   };
+
+map.on('load', () => {
+  console.log("Map loaded");
 });
 
 socket.onclose = () => {
@@ -117,16 +176,27 @@ socket.onclose = () => {
 map.addControl(new maplibregl.NavigationControl());
 
 function addMarkToMap(mark) {
+  if (typeof mark === 'string') {
+    try {
+      mark = JSON.parse(mark);
+    } catch (e) {
+      console.error("Failed to parse double serialized mark string:", e);
+      return;
+    }
+  }
   let color = '#3fb1ce';
   if (mark.type === 'markedImportant') color = '#f1c40f';
-  if (mark.type === 'markedDangerous') color = '#e74c3c';
+  if (mark.type === 'markedDangerous') color = '#5a231d';
 
-  if (mark.lon && mark.lat) {
+  const lon = parseFloat(mark.lon || mark.long || mark.longitude);
+  const lat = parseFloat(mark.lat);
+
+  if (!isNaN(lon) && !isNaN(lat)) {
     const newMarker = new maplibregl.Marker({ color: color })
-      .setLngLat([mark.lon, mark.lat])
+      .setLngLat([lon, lat])
       .setPopup(new maplibregl.Popup().setHTML(`
         <strong>${mark.name || 'Emergency Mark'}</strong><br>
-        Type: ${mark.type}<br>
+        Type: ${mark.type || 'unclassified'}<br>
         Info: ${mark.info || ''}
       `));
 
@@ -135,9 +205,9 @@ function addMarkToMap(mark) {
     }
 
     allMarkers.push(newMarker);
-    console.log(`Mark [${mark.name}] success.`);
+    console.log(`Mark [${mark.name || 'Unnamed'}] loaded successfully.`);
   } else {
-    console.warn("Mark missing coordinates:", mark);
+    console.warn("Mark missing or has invalid coordinates:", mark);
   }
 }
 
@@ -175,23 +245,12 @@ map.on('click', (e) => {
 });
 
 const controlContainer = document.createElement('div');
-controlContainer.style.position = 'absolute';
-controlContainer.style.top = '10px';
-controlContainer.style.right = '10px';
-controlContainer.style.zIndex = '10';
-controlContainer.style.display = 'flex';
-controlContainer.style.flexDirection = 'column';
-controlContainer.style.gap = '5px';
+controlContainer.className = 'control-container';
 document.getElementById('pymaplibregl').appendChild(controlContainer);
 
 const toggleMarksBtn = document.createElement('button');
+toggleMarksBtn.className = 'nav-btn';
 toggleMarksBtn.innerText = 'Hide/Show Marks';
-toggleMarksBtn.style.padding = '8px 12px';
-toggleMarksBtn.style.backgroundColor = '#ffffff';
-toggleMarksBtn.style.border = '1px solid #ccc';
-toggleMarksBtn.style.borderRadius = '4px';
-toggleMarksBtn.style.cursor = 'pointer';
-toggleMarksBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
 
 toggleMarksBtn.onclick = () => {
   marksVisible = !marksVisible;
@@ -208,13 +267,8 @@ toggleMarksBtn.onclick = () => {
 };
 
 const manualCorrectionOffBtn = document.createElement('button');
+manualCorrectionOffBtn.className = 'nav-btn';
 manualCorrectionOffBtn.innerText = 'Manual Correction Off';
-manualCorrectionOffBtn.style.padding = '8px 12px';
-manualCorrectionOffBtn.style.backgroundColor = '#ffffff';
-manualCorrectionOffBtn.style.border = '1px solid #ccc';
-manualCorrectionOffBtn.style.borderRadius = '4px';
-manualCorrectionOffBtn.style.cursor = 'pointer';
-manualCorrectionOffBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
 manualCorrectionOffBtn.style.visibility = 'hidden';
 
 manualCorrectionOffBtn.onclick = () => {
@@ -236,13 +290,8 @@ controlContainer.appendChild(statusPanel);
 controlContainer.appendChild(toggleMarksBtn);
 
 const manualCorrectionBtn = document.createElement('button');
+manualCorrectionBtn.className = 'nav-btn';
 manualCorrectionBtn.innerText = 'Manual Correction';
-manualCorrectionBtn.style.padding = '8px 12px';
-manualCorrectionBtn.style.backgroundColor = '#ffffff';
-manualCorrectionBtn.style.border = '1px solid #ccc';
-manualCorrectionBtn.style.borderRadius = '4px';
-manualCorrectionBtn.style.cursor = 'pointer';
-manualCorrectionBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
 
 manualCorrectionBtn.onclick = () => {
   if (!vehicleMarker) {
@@ -255,8 +304,7 @@ manualCorrectionBtn.onclick = () => {
   if (correctionStep === 0) {
     correctionStep = 1;
     manualCorrectionBtn.innerText = 'Confirm Coordinates';
-    manualCorrectionBtn.style.backgroundColor = '#e74c3c';
-    manualCorrectionBtn.style.color = '#ffffff';
+    manualCorrectionBtn.className = 'nav-btn btn-red';
 
     vehicleMarker.setDraggable(true);
     console.log("Location correction activated. Drag the red marker to your wanted position.");
@@ -270,16 +318,14 @@ manualCorrectionBtn.onclick = () => {
 
     correctionStep = 2;
     manualCorrectionBtn.innerText = 'Confirm Orientation';
-    manualCorrectionBtn.style.backgroundColor = '#f1c40f';
-    manualCorrectionBtn.style.color = '#000000';
+    manualCorrectionBtn.className = 'nav-btn btn-yellow';
 
     rotationSlider = document.createElement('input');
     rotationSlider.type = 'range';
     rotationSlider.min = '0';
     rotationSlider.max = '360';
+    rotationSlider.className = 'rotation-slider';
     rotationSlider.value = vehicleMarker.getRotation() || '0';
-    rotationSlider.style.width = '100%';
-    rotationSlider.style.marginTop = '4px';
     
     rotationSlider.oninput = (e) => {
       tempCourse = parseFloat(e.target.value);
@@ -292,8 +338,7 @@ manualCorrectionBtn.onclick = () => {
   } else if (correctionStep === 2) {
     correctionStep = 0;
     manualCorrectionBtn.innerText = 'Manual Correction';
-    manualCorrectionBtn.style.backgroundColor = '#ffffff';
-    manualCorrectionBtn.style.color = '#000000';
+    manualCorrectionBtn.className = 'nav-btn';
 
     if (rotationSlider) {
       rotationSlider.remove();
@@ -333,14 +378,8 @@ modeControlContainer.style.zIndex = '1000';
 controlContainer.appendChild(modeControlContainer);
 
 const sendCurrentLocBtn = document.createElement('button');
+sendCurrentLocBtn.className = 'nav-btn btn-blue';
 sendCurrentLocBtn.innerText = 'Send Current Location';
-sendCurrentLocBtn.style.padding = '8px 12px';
-sendCurrentLocBtn.style.backgroundColor = '#3498db';
-sendCurrentLocBtn.style.color = '#ffffff';
-sendCurrentLocBtn.style.border = '1px solid #ccc';
-sendCurrentLocBtn.style.borderRadius = '4px';
-sendCurrentLocBtn.style.cursor = 'pointer';
-sendCurrentLocBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
 
 sendCurrentLocBtn.onclick = () => {
     if (!vehicleMarker) {
@@ -365,5 +404,4 @@ sendCurrentLocBtn.onclick = () => {
 };
 
 controlContainer.appendChild(sendCurrentLocBtn);
-
 controlContainer.appendChild(manualCorrectionOffBtn);

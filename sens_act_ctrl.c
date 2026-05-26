@@ -46,7 +46,7 @@
 
 static int running = 1;
 static int i2c_fd = -1;
-static int cell_conn = 0, gnss_conn_lost = 0, cam_stat = 0, buzzer = 0;
+static int cell_conn = 0, gnss_conn_lost = 0, cam_stat = 0, buzzer = 0, manual_correction = 0;
 
 static struct gpiod_chip *chip = NULL;
 static struct gpiod_line_request *input_req = NULL;
@@ -330,16 +330,16 @@ void process_hub_message(const char *msg) {
     } 
     else if (strcmp(topic, "location/manual_correction") == 0) {
         if (lat_ptr && lon_ptr) {
-            gnss_conn_lost = 1; // Force GNSS off to trigger Dead Reckoning
+            manual_correction = 1;
             anchor_lat = lat_val; anchor_lon = lon_val;
             current_lat = lat_val; current_lon = lon_val;
             vel_x = 0.0; vel_y = 0.0; pos_x = 0.0; pos_y = 0.0;
             printf("[DR] Manual Override! DR running from new anchor: %f, %f\n", anchor_lat, anchor_lon);
         }
     }
-    else if (strcmp(topic, "system/gps_mode") == 0) {
+    else if (strcmp(topic, "location/manual_correction_off") == 0) {
         if (strstr(msg, "\"GPS\"")) {
-            gnss_conn_lost = 0; // Pause DR
+            manual_correction = 0;
             printf("[DR] System commanded back to GPS mode. DR paused.\n");
         }
     }
@@ -441,18 +441,18 @@ int main() {
 
     struct timespec last_dr_time;
     clock_gettime(CLOCK_MONOTONIC, &last_dr_time);
-    long dr_interval_ns = 1000000000L;
+    long dr_interval_ns = 3000000000L;
 
     while (running) {
         check_hub_messages();
         update_leds();
         toggle_buzzer();
 
-        if (gnss_conn_lost) {
+        if (gnss_conn_lost || manual_correction) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
 
-            long elapsed_ns = (now.tv_sec - last_dr_time.tv_sec) * 3000000000L + 
+            long elapsed_ns = (now.tv_sec - last_dr_time.tv_sec) * 1000000000L + 
                               (now.tv_nsec - last_dr_time.tv_nsec);
 
             if (elapsed_ns >= dr_interval_ns) {

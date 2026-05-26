@@ -66,16 +66,6 @@ def off_manual_correct():
     except socket.error as e:
         print(f"UDS connection failure: {e}")
         return jsonify({"status": "error", "message": "UDS Broker unreachable"}), 500
-    
-@app.route('/set_mode', methods=['POST'])
-def set_mode():
-    payload = request.get_json()
-    mode = payload.get("mode", "GPS") 
-    success = send_to_hub("system/gps_mode", mode)
-    
-    if success:
-        return jsonify({"status": "success", "mode": mode})
-    return jsonify({"status": "error", "message": "Hub unreachable"}), 500
 
 @app.route("/mark", methods=["POST"])
 def save_mark():

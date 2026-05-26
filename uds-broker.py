@@ -40,16 +40,24 @@ def db_worker():
     conn.commit()
 
     while True:
-        if not db_queue.empty():
+        db_has_updates = False
+        
+        while not db_queue.empty():
             query, params = db_queue.get()
             try:
                 conn.execute(query, params)
-                conn.commit()
+                db_has_updates = True
             except Exception as e:
                 print(f"DB Write error: {e}")
             db_queue.task_done()
+        
+        if db_has_updates:
+            try:
+                conn.commit()
+            except Exception as e:
+                print(f"DB Commit error: {e}")
             
-        if not req_queue.empty():
+        while not req_queue.empty():
             client_socket, query, params, req_id = req_queue.get()
             try:
                 cursor = conn.cursor()
@@ -57,7 +65,6 @@ def db_worker():
                 rows = cursor.fetchall()
                 columns = [d[0] for d in cursor.description]
                 result = [dict(zip(columns, row)) for row in rows]
-                
                 response = {
                     "topic": "db/response",
                     "req_id": req_id,
@@ -71,8 +78,7 @@ def db_worker():
                 except:
                     pass
             req_queue.task_done()
-            
-        threading.Event().wait(0.001)
+        threading.Event().wait(0.01)
 
 threading.Thread(target=db_worker, daemon=True).start()
 
@@ -94,7 +100,7 @@ def main():
     print(f"UDS server started: {SOCKET_PATH}")
 
     while True:
-        read_sockets, _, _ = select.select(sockets_list, [], [], 0.05)
+        read_sockets, _, _ = select.select(sockets_list, [], [], 0.005)
 
         # Drain db responses queued by db_worker thread - safe
         while not response_queue.empty():
@@ -117,6 +123,13 @@ def main():
                 client_socket.setblocking(False)
                 sockets_list.append(client_socket)
                 clients[client_socket] = b""
+                # Push existing marks to the new client so a page reload shows history
+                req_queue.put((
+                    client_socket,
+                    "SELECT name, lon, lat, info, type, source FROM MarkedLocation ORDER BY created_at DESC LIMIT 200",
+                    (),
+                    "init_marks"
+                ))
             else:
                 try:
                     data = notified_socket.recv(4096)
@@ -158,53 +171,59 @@ def main():
                                 continue
 
                         print(f"[UDS] PAYLOAD: {payload}")
-                        if topic in ["location/gnss", "location/dr"]:
-                            print("[UDS] LOCATION UPDATE RECEIVED")
-                            db_queue.put(("INSERT INTO UserLocation (lon, lat, source) VALUES (?, ?, ?)", (
-                                payload['lon'], payload['lat'], topic.split('/')[-1])))
+                        try:
+                            if topic in ["location/gnss", "location/dr"]:
+                                print("[UDS] LOCATION UPDATE RECEIVED")
+                                db_queue.put(("INSERT INTO UserLocation (lon, lat, source) VALUES (?, ?, ?)", (
+                                    payload['lon'], payload['lat'], topic.split('/')[-1])))
 
-                        elif topic in ["marks/local", "marks/cloud"] or topic == "button/loc":
-                            print("[UDS] MARK RECEIVED")
-                            long_val = payload.get('lon', 0.0)
-                            lat_val = payload.get('lat', 0.0)
-                            name_val = payload.get('name', 'Emergency mark')
-                            info_val = payload.get('info', 'Quick action mark')
-                            incoming_type = payload.get('type', 'unclassified')
+                            elif topic in ["marks/local", "marks/cloud"] or topic == "button/loc":
+                                print("[UDS] MARK RECEIVED")
+                                long_val = payload.get('lon', 0.0)
+                                lat_val = payload.get('lat', 0.0)
+                                name_val = payload.get('name', 'Emergency mark')
+                                info_val = payload.get('info', 'Quick action mark')
+                                incoming_type = payload.get('type', 'unclassified')
 
-                            if incoming_type not in ['markedImportant', 'markedDangerous', 'unclassified']:
-                                type_val = 'unclassified'
-                            else:
-                                type_val = incoming_type
+                                if incoming_type not in ['markedImportant', 'markedDangerous', 'unclassified']:
+                                    type_val = 'unclassified'
+                                else:
+                                    type_val = incoming_type
 
-                            if topic == "marks/cloud":
-                                source_val = "monitor"
-                            else:
-                                source_val = "driver"
+                                if topic == "marks/cloud":
+                                    source_val = "monitor"
+                                else:
+                                    source_val = "driver"
 
-                            if topic == "button/loc":
-                                type_val = "markEmergency"
+                                if topic == "button/loc":
+                                    type_val = "markEmergency"
 
-                            db_queue.put(("INSERT INTO MarkedLocation (name, lon, lat, info, source, type) VALUES (?, ?, ?, ?, ?, ?)",
-                                (name_val, long_val, lat_val, info_val, source_val, type_val)
-                            ))
-
-                        elif topic == "button/del":
-                            print("[UDS] DELETE REQUEST")
-                            db_queue.put(("DELETE FROM UserLocation", ()))
-                            db_queue.put(("DELETE FROM MarkedLocation WHERE source = 'driver'",()))
-
-                        elif topic == "db/query":
-                            print("[UDS] DB QUERY")
-                            sql_cmd = payload.get("query")
-                            sql_params = payload.get("params", ())
-                            if sql_cmd.strip().upper().startswith("SELECT"):
-                                req_queue.put((
-                                    notified_socket,
-                                    sql_cmd,
-                                    sql_params,
-                                    req_id
+                                db_queue.put(("INSERT INTO MarkedLocation (name, lon, lat, info, source, type) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (name_val, long_val, lat_val, info_val, source_val, type_val)
                                 ))
+
+                            elif topic == "button/del":
+                                print("[UDS] DELETE REQUEST")
+                                db_queue.put(("DELETE FROM UserLocation", ()))
+                                db_queue.put(("DELETE FROM MarkedLocation WHERE source = 'driver'",()))
+
+                            elif topic == "db/query":
+                                print("[UDS] DB QUERY")
+                                sql_cmd = payload.get("query")
+                                sql_params = payload.get("params", ())
+                                if sql_cmd.strip().upper().startswith("SELECT"):
+                                    req_queue.put((
+                                        notified_socket,
+                                        sql_cmd,
+                                        sql_params,
+                                        req_id
+                                    ))
                                 continue
+
+                        except Exception as proc_err:
+                            print("[UDS] MESSAGE PROCESSING ERROR (client kept):", proc_err)
+                            continue  # bad payload - skip broadcast but keep client connected
+
                         raw_broadcast = line + b"\n"
                         print(f"[UDS] Broadcasting to {len(clients) - 1} clients")
 
