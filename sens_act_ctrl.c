@@ -184,7 +184,7 @@ void update_dead_reckoning() {
     
     write(i2c_fd, &reg, 1);
     if (read(i2c_fd, buffer, 6) != 6) {
-        printf("[DR ERROR] Failed to read BNO055 I2C data!\n"); // ADD THIS
+        printf("[DR ERROR] Failed to read BNO055 I2C data!\n");
         return;
     }
 
@@ -231,7 +231,7 @@ void update_dead_reckoning() {
 void update_leds() {
     enum gpiod_line_value values[] = {
         cell_conn ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
-        !gnss_conn_lost ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
+        gnss_conn_lost ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE,
         cam_stat  ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE
     };
     if (gpiod_line_request_set_values(output_req, values) < 0) {
@@ -312,7 +312,10 @@ void process_hub_message(const char *msg) {
     } 
     else if (strcmp(topic, "alert/buzzer") == 0 && state_ptr) {
         buzzer = val;
-    } 
+    }
+    else if (strcmp(topic, "conn_stat/cam") == 0 && state_ptr) {
+        cam_stat = val;
+    }
     else if (strcmp(topic, "conn_stat/gnss") == 0 && state_ptr) {
         gnss_conn_lost = !val;
         if (gnss_conn_lost && lat_ptr && lon_ptr) {
@@ -449,7 +452,7 @@ int main() {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
 
-            long elapsed_ns = (now.tv_sec - last_dr_time.tv_sec) * 1000000000L + 
+            long elapsed_ns = (now.tv_sec - last_dr_time.tv_sec) * 3000000000L + 
                               (now.tv_nsec - last_dr_time.tv_nsec);
 
             if (elapsed_ns >= dr_interval_ns) {

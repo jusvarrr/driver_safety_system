@@ -11,6 +11,7 @@ DB_TELEM = '/home/justi/telemetry.db'
 
 db_queue = Queue()
 req_queue = Queue()
+response_queue = Queue()  # db_worker puts responses here; main loop sends them safely
 
 def db_worker():
     conn = sqlite3.connect(DB_TELEM, check_same_thread=False)
@@ -62,11 +63,11 @@ def db_worker():
                     "req_id": req_id,
                     "data": result
                 }
-                client_socket.sendall(json.dumps(response).encode('utf-8') + b"\n")
+                response_queue.put((client_socket, json.dumps(response).encode('utf-8') + b"\n"))
             except Exception as e:
                 try:
                     err_resp = {"topic": "db/response", "req_id": req_id, "error": str(e)}
-                    client_socket.sendall(json.dumps(err_resp).encode('utf-8') + b"\n")
+                    response_queue.put((client_socket, json.dumps(err_resp).encode('utf-8') + b"\n"))
                 except:
                     pass
             req_queue.task_done()
@@ -93,7 +94,22 @@ def main():
     print(f"UDS server started: {SOCKET_PATH}")
 
     while True:
-        read_sockets, _, _ = select.select(sockets_list, [], [])
+        read_sockets, _, _ = select.select(sockets_list, [], [], 0.05)
+
+        # Drain db responses queued by db_worker thread - safe
+        while not response_queue.empty():
+            try:
+                resp_sock, resp_data = response_queue.get_nowait()
+                if resp_sock in clients:
+                    try:
+                        resp_sock.sendall(resp_data)
+                    except BlockingIOError:
+                        pass  # client buffer full, drop this response
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         for notified_socket in read_sockets:
             if notified_socket == server:
                 client_socket, _ = server.accept()
@@ -133,6 +149,14 @@ def main():
                         payload = msg.get("data")
                         req_id = msg.get("req_id")
                         print(f"[UDS] TOPIC: {topic}")
+
+                        if isinstance(payload, str):
+                            try:
+                                payload = json.loads(payload)
+                            except json.JSONDecodeError:
+                                print(f"[UDS] Error: Payload is a string but not valid JSON: {payload}")
+                                continue
+
                         print(f"[UDS] PAYLOAD: {payload}")
                         if topic in ["location/gnss", "location/dr"]:
                             print("[UDS] LOCATION UPDATE RECEIVED")
@@ -189,6 +213,8 @@ def main():
                                 try:
                                     client.sendall(raw_broadcast)
                                     print("[UDS] Broadcast OK")
+                                except BlockingIOError:
+                                    pass  # client receive buffer temporarily full — keep connection
                                 except Exception as e:
                                     print("[UDS] Broadcast failed:", e)
 

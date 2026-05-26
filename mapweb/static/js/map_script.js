@@ -218,8 +218,6 @@ manualCorrectionOffBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
 manualCorrectionOffBtn.style.visibility = 'hidden';
 
 manualCorrectionOffBtn.onclick = () => {
-  console.log("Post data (mark):", markData);
-
   fetch('/off_manual_correct', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' }
@@ -228,6 +226,7 @@ manualCorrectionOffBtn.onclick = () => {
   .then(res => {
     if (res.status === "ok") {
       console.log("Flask manual correction off sent to UDS hub.");
+      manualCorrectionOffBtn.style.visibility = 'hidden';
     }
   })
   .catch(err => console.error("Error in request:", err));

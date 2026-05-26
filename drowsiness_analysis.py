@@ -11,11 +11,15 @@ def connect():
     s.connect("/tmp/system_hub.sock")
     return s
 
-try:
-    hub_sock = connect()
-except Exception:
-    print("broker not ready, will try reconnecting")
-    hub_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+print("Waiting for UDS broker (/tmp/system_hub.sock) to start...", flush=True)
+hub_sock = None
+while True:
+    try:
+        hub_sock = connect()
+        print("Successfully connected to UDS broker!", flush=True)
+        break
+    except Exception:
+        time.sleep(2)
 
 last_buzzer_state = -1
 state = 0
@@ -36,9 +40,26 @@ def send_buzzer(state):
         time.sleep(1)
         hub_sock = connect()
 
+def send_cam_on(state):
+    global hub_sock
+    try:
+        msg = {
+            "topic": "conn_stat/cam",
+            "data": {"state": state}
+        }
+        hub_sock.sendall((json.dumps(msg) + "\n").encode())
+    except Exception:
+        try:
+            hub_sock.close()
+        except:
+            pass
+        time.sleep(1)
+        hub_sock = connect()
+
 def cam_term(signum, frame):
     try:
         picam2.stop()
+        send_cam_on(0)
     except Exception as e:
         print("error turning cam off")
     sys.exit(0)
@@ -53,14 +74,18 @@ picam2 = Picamera2()
 signal.signal(signal.SIGINT, cam_term)
 signal.signal(signal.SIGTERM, cam_term)
 
-picam2.configure(picam2.create_preview_configuration(main={"format": "BGR888", "size": (640, 480)}))
+picam2.configure(picam2.create_preview_configuration(main={"format": "BGR888", "size": (640, 280)}))
+print("size 320x240")
 picam2.start()
+send_cam_on(1)
 
 sleep_counter = 0
 
 while True:
     frame = picam2.capture_array()
+    small_frame = cv2.resize(frame, (320, 240))
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
     faces = face_cascade.detectMultiScale(gray, 1.1, 5)
     
     is_profile = False
@@ -91,7 +116,7 @@ while True:
 
         if len(eyes) == 0:
             sleep_counter += 1
-            if sleep_counter > 10:
+            if sleep_counter > 7:
                 state = 1
                 #cv2.putText(frame, "MIEGUISTUMAS", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
                 print("drowsy")
@@ -109,7 +134,7 @@ while True:
         last_buzzer_state = state
 
     #cv2.imshow("DMS - Profile Support", frame)
-    time.sleep(0.15)
+    time.sleep(0.2)
     #if cv2.waitKey(1) == ord('q'): break
 
 picam2.stop()

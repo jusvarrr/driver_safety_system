@@ -59,7 +59,7 @@ def off_manual_correct():
     data = {}
     try:
         if send_to_hub("location/manual_correction_off", data):
-            return jsonify({"status": "success", "message": "Manual correction off broadcasted"})
+            return jsonify({"status": "ok", "message": "Manual correction off broadcasted"})
         else:
             return jsonify({"status": "error", "message": "Failed to send to system hub"}), 500
         

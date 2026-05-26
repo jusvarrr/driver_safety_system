@@ -104,6 +104,8 @@ class TelemetryControl:
                 msg = {"topic": "marks/cloud", "data": payload}
                 self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
 
+        except BlockingIOError:
+            pass  # broker receive buffer temporarily full — keep connection, retry next cycle
         except Exception as ex: 
             print(f"Failed to send data to hub: {ex}")
             self.hub_sock = None
