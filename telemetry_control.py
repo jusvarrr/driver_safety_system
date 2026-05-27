@@ -165,6 +165,7 @@ class TelemetryControl:
                             
                         elif topic == "button/cell":
                             self.connection_toggle_commanded = True
+                            self.connection_toggle_requested_at = time.time()
 
         except BlockingIOError:
             pass
@@ -437,9 +438,14 @@ class TelemetryControl:
                     self.location_queue.append(json.dumps({"id": self.dev_id, "lat": self.current_lat, "long": self.current_long}))
                 self.last_updated_to_cloud = now
                 
-            if self.connection_toggle_commanded and action_state == self.sim7600.ActionState.NONE:
-                self.toggle_connection()
-                continue
+            if self.connection_toggle_commanded:
+                toggle_wait = time.time() - getattr(self, 'connection_toggle_requested_at', now)
+                if action_state == self.sim7600.ActionState.NONE or toggle_wait > 2.0:
+                    if toggle_wait > 2.0 and action_state != self.sim7600.ActionState.NONE:
+                        print("Toggle waited too long, forcing clean transmit first")
+                        self.sim7600.clean_transmit()
+                    self.toggle_connection()
+                    continue
 
             gps_poll_rate = 1 if self.data_mode == 'GPS' else 5
             if self.fallback_to_gnss and now - self.last_updated_to_maps > gps_poll_rate and action_state == self.sim7600.ActionState.NONE:
@@ -455,9 +461,6 @@ class TelemetryControl:
             elif self.sim7600.cell_connected and self.location_queue and action_state == self.sim7600.ActionState.NONE:
                 self.sim7600.set_action_state(self.sim7600.ActionState.GPS_SEND)
                 action_state = self.sim7600.get_action_state()
-
-            elif self.sim7600.cell_connected and self.location_queue:
-                print("for some reason cell connected fucked")
 
             if (action_state == self.sim7600.ActionState.GPS_SEND and self.location_queue):
                 self.send_mqtt_to_cloud_api_sim7600(f"driver/location/{self.dev_id}", self.location_queue[0])

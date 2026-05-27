@@ -285,7 +285,6 @@ static int hub_rx_len = 0;
 void process_hub_message(const char *msg) {
     char topic[64] = {0};
     
-    // Safely extract Topic
     char *topic_start = strstr(msg, "\"topic\":");
     if (topic_start) {
         sscanf(topic_start, "\"topic\": \"%63[^\"]\"", topic);
@@ -296,7 +295,6 @@ void process_hub_message(const char *msg) {
     int val = 0;
     double lat_val = 0.0, lon_val = 0.0;
 
-    // Safely extract variables regardless of JSON order or spacing
     char *state_ptr = strstr(msg, "\"state\":");
     if (state_ptr) sscanf(state_ptr, "\"state\": %d", &val);
 
@@ -306,7 +304,6 @@ void process_hub_message(const char *msg) {
     char *lon_ptr = strstr(msg, "\"lon\":");
     if (lon_ptr) sscanf(lon_ptr, "\"lon\": %lf", &lon_val);
 
-    // --- Logic Routing ---
     if (strcmp(topic, "conn_stat/cell") == 0 && state_ptr) {
         cell_conn = !val;
     } 
@@ -368,7 +365,6 @@ void check_hub_messages() {
         hub_rx_len += bytes;
         hub_rx_buffer[hub_rx_len] = '\0';
 
-        // Process line by line
         char *line_start = hub_rx_buffer;
         char *newline;
         while ((newline = strchr(line_start, '\n')) != NULL) {
@@ -377,7 +373,6 @@ void check_hub_messages() {
             line_start = newline + 1;
         }
 
-        // Keep incomplete chunks in the buffer for the next read
         int remaining = hub_rx_len - (line_start - hub_rx_buffer);
         if (remaining > 0) {
             memmove(hub_rx_buffer, line_start, remaining);
@@ -393,7 +388,10 @@ void send_hub_message(const char *topic, const char *json_payload) {
     snprintf(buffer, sizeof(buffer), "{\"topic\": \"%s\", \"data\": %s}\n", topic, json_payload);
 
     int ret = write(hub_fd, buffer, strlen(buffer));
-    if (ret <= 0) {
+    if (ret < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return;
+        }
         perror("write to hub");
         close(hub_fd);
         hub_fd = -1;
