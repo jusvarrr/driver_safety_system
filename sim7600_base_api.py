@@ -166,8 +166,6 @@ class SIM7600BaseApi:
                 matches = re.search(r"\+CREG:\s*\d,(\d)", ordered_data)
                 if matches:
                     stat = int(matches.group(1))
-                    self.previous_cell_connected = self.cell_connected
-                    self.cell_connected = (stat == 1 or stat == 5)
                     header_end = matches.end()
                     if header_end > found_last: found_last = header_end
 

@@ -375,9 +375,6 @@ class TelemetryControl:
     def toggle_connection(self):
         self.connection_toggle_commanded = False
 
-        msg = {"topic": "conn_stat/cell", "data": {"state": self.sim7600.cell_connected}}
-        self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
-
         if self.sim7600.cell_connected:
             self.sim7600_disconnect_from_services()
             self.sim7600.cell_connected = False
@@ -386,8 +383,11 @@ class TelemetryControl:
         else:
             self.sim7600_setup()
             self.setup_mqtt()
-            self.sim7600.cell_connected = True
             print("Executing button - connect to cellular")
+
+        
+        msg = {"topic": "conn_stat/cell", "data": {"state": self.sim7600.cell_connected}}
+        self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
 
     def run(self):
         self.dev_id = self.get_tracker_id()
