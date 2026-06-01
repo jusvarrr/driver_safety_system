@@ -383,6 +383,7 @@ class TelemetryControl:
         else:
             self.sim7600_setup()
             self.setup_mqtt()
+            self.sim7600.cell_connected = True
             print("Executing button - connect to cellular")
 
         

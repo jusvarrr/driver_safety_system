@@ -184,7 +184,7 @@ void update_dead_reckoning() {
     
     write(i2c_fd, &reg, 1);
     if (read(i2c_fd, buffer, 6) != 6) {
-        printf("[DR ERROR] Failed to read BNO055 I2C data!\n");
+        printf("[DR ERROR] Failed to read BNO055 I2C data\n");
         return;
     }
 

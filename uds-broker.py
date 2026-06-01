@@ -102,7 +102,6 @@ def main():
     while True:
         read_sockets, _, _ = select.select(sockets_list, [], [], 0.005)
 
-        # Drain db responses queued by db_worker thread - safe
         while not response_queue.empty():
             try:
                 resp_sock, resp_data = response_queue.get_nowait()
@@ -123,7 +122,7 @@ def main():
                 client_socket.setblocking(False)
                 sockets_list.append(client_socket)
                 clients[client_socket] = b""
-                # Push existing marks to the new client so a page reload shows history
+                # marks to the new client so a page reload shows history
                 req_queue.put((
                     client_socket,
                     "SELECT name, lon, lat, info, type, source FROM MarkedLocation ORDER BY created_at DESC LIMIT 200",
