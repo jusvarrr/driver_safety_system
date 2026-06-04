@@ -386,8 +386,7 @@ class TelemetryControl:
             self.sim7600.cell_connected = True
             print("Executing button - connect to cellular")
 
-        
-        msg = {"topic": "conn_stat/cell", "data": {"state": self.sim7600.cell_connected}}
+        msg = {"topic": "conn_stat/cell", "data": {"state": int(self.sim7600.cell_connected)}}
         self.hub_sock.sendall((json.dumps(msg) + "\n").encode('utf-8'))
 
     def run(self):

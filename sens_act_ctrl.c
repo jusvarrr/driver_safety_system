@@ -288,6 +288,7 @@ void process_hub_message(const char *msg) {
     char *topic_start = strstr(msg, "\"topic\":");
     if (topic_start) {
         sscanf(topic_start, "\"topic\": \"%63[^\"]\"", topic);
+        printf("Received message on topic: %s, message: %s\n", topic, msg);
     } else {
         return;
     }
@@ -304,11 +305,15 @@ void process_hub_message(const char *msg) {
     char *lon_ptr = strstr(msg, "\"lon\":");
     if (lon_ptr) sscanf(lon_ptr, "\"lon\": %lf", &lon_val);
 
+    printf("Received message on topic with val: %d\n", val);
+
     if (strcmp(topic, "conn_stat/cell") == 0 && state_ptr) {
         cell_conn = !val;
+        printf("cell conn: %d\n", cell_conn);
     } 
     else if (strcmp(topic, "alert/buzzer") == 0 && state_ptr) {
         buzzer = val;
+        printf("buzzer: %d\n", buzzer);
     }
     else if (strcmp(topic, "conn_stat/cam") == 0 && state_ptr) {
         cam_stat = val;
