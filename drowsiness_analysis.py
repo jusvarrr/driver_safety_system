@@ -5,6 +5,7 @@ import json
 import time
 import signal
 import sys
+import numpy as np
 
 def connect():
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -64,67 +65,72 @@ def cam_term(signum, frame):
         print("error turning cam off")
     sys.exit(0)
 
+landmark_color = [
+        (255,   0,   0), # right eye
+        (  0,   0, 255), # left eye
+        (  0, 255,   0), # nose tip
+        (255,   0, 255), # right mouth corner
+        (  0, 255, 255)  # left mouth corner
+    ]
+
+detector = cv2.FaceDetectorYN.create("face_detection_yunet_2026may.onnx", "", (320, 240))
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+face_alt_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt.xml')
+face_alt2_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml')
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-mouth_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
+eye_glasses = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye_tree_eyeglasses.xml')
 
 picam2 = Picamera2()
 
 signal.signal(signal.SIGINT, cam_term)
 signal.signal(signal.SIGTERM, cam_term)
 
-picam2.configure(picam2.create_preview_configuration(main={"format": "BGR888", "size": (640, 280)}))
+picam2.configure(picam2.create_preview_configuration(main={"format": "BGR888", "size": (320, 240)}))
 print("size 320x240")
 picam2.start()
 send_cam_on(1)
-
 sleep_counter = 0
+
+origin = ""
 
 while True:
     frame = picam2.capture_array()
-    small_frame = cv2.resize(frame, (320, 240))
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
     faces = face_cascade.detectMultiScale(gray, 1.1, 5)
-    
-    is_profile = False
-    if len(faces) == 0:
-        faces = profile_cascade.detectMultiScale(gray, 1.1, 5)
-        is_profile = True
+    face_model = 'default'
 
     if len(faces) > 0:
         (x, y, w, h) = faces[0]
-        
-        color = (255, 191, 0) if is_profile else (255, 0, 0)
-        label = "Profilis" if is_profile else "Veidas"
-        #cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
-        #cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        color = (255, 0, 0)
+        label = "Face"
+        cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
+        cv2.putText(frame, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
         roi_gray = gray[y:y+h, x:x+w]
-        roi_color = frame[y:y+h, x:x+w]
 
-        eye_neighbors = 5 if is_profile else 15
+        eye_neighbors = 15
         eyes = eye_cascade.detectMultiScale(roi_gray[0:int(h/1.8), :], 1.1, eye_neighbors)
-        
-        mouths = mouth_cascade.detectMultiScale(roi_gray[int(h/1.6):, :], 1.5, 20)
+        eyes_model = "basic_eyes"
+        if len(eyes) == 0:
+            eyes = eye_glasses.detectMultiScale(roi_gray[0:int(h/1.8), :], 1.1, eye_neighbors)
+            eyes_model = "glasses"
 
-        #for (ex, ey, ew, eh) in eyes:
-        #    cv2.rectangle(roi_color, (ex, ey), (ex+ew, ey+eh), (0, 255, 0), 2)
-        #for (mx, my, mw, mh) in mouths:
-        #    cv2.rectangle(roi_color, (mx, my+int(h/1.6)), (mx+mw, my+mh+int(h/1.6)), (0, 255, 255), 2)
+        for (ex, ey, ew, eh) in eyes:
+            cv2.rectangle(frame, (x + ex, y + ey), (x + ex+ew, y + ey+eh), (0, 255, 0), 2)
 
         if len(eyes) == 0:
             sleep_counter += 1
             if sleep_counter > 7:
                 state = 1
-                #cv2.putText(frame, "MIEGUISTUMAS", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
-                print("drowsy")
+                print(f"{face_model}, {eyes_model} - drowsy")
+                cv2.putText(frame, "MIEGUISTUMAS", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
         else:
             state = 0
             sleep_counter = 0
-            print("awake")
-            #cv2.putText(frame, "Budrus", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            print(f"{face_model}, {eyes_model} - awake")
+            cv2.putText(frame, "BUDRUMAS", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     else:
         state = 0
         sleep_counter = 0
@@ -133,9 +139,10 @@ while True:
         send_buzzer(state)
         last_buzzer_state = state
 
-    #cv2.imshow("DMS - Profile Support", frame)
+    display_frame = cv2.resize(frame, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+    cv2.imshow("DMS - Profile Support", display_frame)
     time.sleep(0.2)
-    #if cv2.waitKey(1) == ord('q'): break
+    if cv2.waitKey(1) == ord('q'): break
 
 picam2.stop()
-#cv2.destroyAllWindows()
+cv2.destroyAllWindows()
